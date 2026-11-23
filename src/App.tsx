@@ -1,0 +1,1296 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+import {
+  Archive, BookOpen, FileDown, FolderSearch, ListChecks, RefreshCw,
+  ShieldCheck, Sparkles, Stethoscope, TriangleAlert,
+} from "lucide-react";
+import { Toaster } from "@/components/ui/sonner";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  AppHeader, ScanStatusBar, ReviewBoard, SelectionSummaryBar, QuarantineView,
+  DiagnosePanel, LandingHero, EmptyState, ErrorState, ConfirmQuarantineDialog,
+  EntryDrawer, formatBytes,
+} from "@/src/components";
+import { Panel, ToneDot } from "@/src/components/shared";
+import type {
+  CleanupAction, DiagnosisReport, JudgedEntry, KnowledgeHit, OwnerGroup,
+  QuarantineRecord, RevivalMechanism, ScanEntry, ScanPhase, ScanProgress, ScanSource,
+} from "@/src/core/types";
+import {
+  DEFAULT_SCAN_OPTIONS, PRODUCT_NAME, PRODUCT_PHILOSOPHY, QUARANTINE_TTL_DAYS, REVIVAL_LABEL,
+} from "@/src/core/constants";
+import {
+  createScanner, errorMessage, isFileSystemAccessSupported, openLocalRoot, openSandboxRoot,
+  listQuarantine, purgeExpired, quarantineEntries, restoreEntries, emptyQuarantine,
+  deleteQuarantined,
+  SANDBOX_LABEL, generateSandbox, clearSandbox, sandboxReady, type Scanner,
+  appendOpsManual, syncFolderDictionary, readJournal, itemsFromEntries, itemsFromRecords,
+  journalError, OPS_MANUAL_NAME, FOLDER_DICTIONARY_NAME, type OpsEvent,
+} from "@/src/fs";
+import { judgeAll } from "@/src/safety/risk";
+import { groupByOwner, sortGroups } from "@/src/safety/aggregate";
+import { matchAll } from "@/src/knowledge/match";
+import { buildReadOnlyDiagnosticScript } from "@/src/diagnose/ps-readonly";
+import { buildCleanupScript } from "@/src/diagnose/ps-clean";
+import { planCleanupActions } from "@/src/diagnose/report";
+import { resolveUninstallGuidance } from "@/src/diagnose/uninstall";
+import {
+  AI_STATUS_TEXT, apiErrorText, judgeDirectories, requestDiagnosis, toJudgeItem,
+} from "@/src/api";
+
+const IDLE_PROGRESS: ScanProgress = {
+  phase: "idle", visited: 0, bytes: 0, currentPath: "", truncated: false,
+};
+
+const RULE_FILES: { file: string; label: string }[] = [
+  { file: "app-caches.md", label: "应用缓存" },
+  { file: "browsers.md", label: "浏览器" },
+  { file: "bundled-software.md", label: "捆绑软件与外壳扩展残留" },
+  { file: "cloud-drives.md", label: "网盘" },
+  { file: "dev-tools.md", label: "开发工具" },
+  { file: "system.md", label: "系统目录与空目录" },
+  { file: "user-data.md", label: "用户数据（重点保护）" },
+];
+
+const TAB_CLASS = "gap-1.5 rounded-lg border border-transparent px-3 py-1.5 text-sm data-[state=active]:border-primary/40 data-[state=active]:bg-primary/12 data-[state=active]:text-primary";
+
+type PermissionCapable = FileSystemDirectoryHandle & {
+  queryPermission?: (descriptor?: { mode?: string }) => Promise<PermissionState>;
+  requestPermission?: (descriptor?: { mode?: string }) => Promise<PermissionState>;
+};
+
+// Permission prompts need user activation, which a Worker never has. Every write
+// path therefore re-checks on the main thread inside the click handler.
+async function ensureWritePermission(root: FileSystemDirectoryHandle): Promise<void> {
+  const handle = root as PermissionCapable;
+  if (typeof handle.queryPermission === "function"
+    && await handle.queryPermission({ mode: "readwrite" }) === "granted") return;
+  if (typeof handle.requestPermission === "function") {
+    if (await handle.requestPermission({ mode: "readwrite" }) !== "granted") {
+      throw new Error("未获得写入授权，无法移入隔离区。");
+    }
+    return;
+  }
+  throw new Error("当前浏览器无法确认写入授权，已停止操作。");
+}
+
+function downloadText(filename: string, text: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function joinAbsolute(rootAbsPath: string, relative: string): string | null {
+  const root = rootAbsPath.trim().replace(/\//g, "\\").replace(/\\+$/, "");
+  if (!/^[A-Za-z]:\\?/.test(root)) return null;
+  const rel = relative.split("/").filter(Boolean).join("\\");
+  return rel ? `${root}\\${rel}` : root;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+export default function App() {
+  const [source, setSource] = useState<ScanSource | null>(null);
+  const [rootLabel, setRootLabel] = useState("");
+  const [progress, setProgress] = useState<ScanProgress>(IDLE_PROGRESS);
+  const [groups, setGroups] = useState<OwnerGroup[]>([]);
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
+  const [records, setRecords] = useState<QuarantineRecord[]>([]);
+  const [view, setView] = useState("review");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [sandboxBusy, setSandboxBusy] = useState(false);
+  const [sandboxProgress, setSandboxProgress] = useState<{ created: number; total: number } | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiNotice, setAiNotice] = useState<string | null>(null);
+
+  // 抽屉：详情只有一处，列表里点开，←/→ 在当前可见条目间移动
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerIds, setDrawerIds] = useState<string[]>([]);
+  const [drawerIndex, setDrawerIndex] = useState(0);
+
+  const [rootAbsPath, setRootAbsPath] = useState("");
+  const [diagnoseTarget, setDiagnoseTarget] = useState("");
+  /** 从审核台/复活提示带过来的相对路径：填好根目录后自动换算成绝对目标 */
+  const [diagnoseRelative, setDiagnoseRelative] = useState("");
+  const [symptoms, setSymptoms] = useState("");
+  const [scriptOutput, setScriptOutput] = useState("");
+  const [report, setReport] = useState<DiagnosisReport | null>(null);
+  const [actions, setActions] = useState<CleanupAction[]>([]);
+  const [script, setScript] = useState<string | null>(null);
+  const [readonlyScript, setReadonlyScript] = useState<string | null>(null);
+  const [diagnoseBusy, setDiagnoseBusy] = useState(false);
+  const [diagnoseError, setDiagnoseError] = useState<string | null>(null);
+
+  const rootRef = useRef<FileSystemDirectoryHandle | null>(null);
+  const scannerRef = useRef<Scanner | null>(null);
+  const bufferRef = useRef<ScanEntry[]>([]);
+  const entriesRef = useRef<ScanEntry[]>([]);
+  const judgedRef = useRef<JudgedEntry[]>([]);
+  const hitsRef = useRef<Map<string, KnowledgeHit | null>>(new Map());
+  const aiIdsRef = useRef<Set<string>>(new Set());
+  // 「重试」必须重跑刚才失败的那个动作，而不是不分来源一律回沙盒
+  const retryRef = useRef<() => void>(() => {});
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  const [dockHeight, setDockHeight] = useState(0);
+
+  const localSupported = useMemo(() => isFileSystemAccessSupported(), []);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("dareclean.rootAbsPath");
+    if (saved) setRootAbsPath(saved);
+  }, []);
+
+  // 底部选择条的高度是动态的：写进内边距，最后一行永远不会被挡住
+  const measureDock = useCallback(() => {
+    const el = dockRef.current;
+    if (el) setDockHeight(Math.ceil(el.getBoundingClientRect().height));
+  }, []);
+
+  useEffect(() => {
+    const el = dockRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measureDock);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [measureDock]);
+
+  const applyJudgment = useCallback((
+    list: ScanEntry[],
+    hits: Map<string, KnowledgeHit | null>,
+    aiIds: Set<string>,
+  ): JudgedEntry[] => {
+    const judged = judgeAll(list, hits).map((entry) =>
+      aiIds.has(entry.id) ? { ...entry, source: "ai" as const } : entry);
+    judgedRef.current = judged;
+    entriesRef.current = list;
+    hitsRef.current = hits;
+    setGroups(sortGroups(groupByOwner(judged)));
+    const selectable = new Set(
+      judged.filter((e) => !e.locked && e.verdict !== "keep_locked").map((e) => e.id),
+    );
+    setSelectedIds((prev) => new Set([...prev].filter((id) => selectable.has(id))));
+    return judged;
+  }, []);
+
+  const refreshQuarantine = useCallback(async (root: FileSystemDirectoryHandle): Promise<QuarantineRecord[]> => {
+    try {
+      const list = await listQuarantine(root);
+      setRecords(list);
+      return list;
+    } catch (err) {
+      toast.error(`读取隔离区失败：${errorMessage(err)}`);
+      return [];
+    }
+  }, []);
+
+  // 审计写入失败绝不能回滚或阻断已经完成的清理，只提示用户。
+  const writeJournal = useCallback(async (
+    root: FileSystemDirectoryHandle,
+    event: OpsEvent | null,
+    quarantinedPaths: ReadonlySet<string>,
+  ) => {
+    try {
+      if (event) await appendOpsManual(root, event);
+      await syncFolderDictionary(root, judgedRef.current, quarantinedPaths);
+    } catch (err) {
+      toast.warning(`清理已完成，但运维手册/文件夹名录写入失败：${journalError(err)}`);
+    }
+  }, []);
+
+  // Unknown directories are the only ones worth a cloud call. Biggest first, so the
+  // limited batch covers the space that actually matters instead of trivial folders.
+  const enrichWithAi = useCallback(async (judged: JudgedEntry[]) => {
+    const candidates = judged
+      .filter((e) => e.kind === "directory" && !e.locked && e.verdict !== "keep_locked" && e.hit === null)
+      .sort((a, b) => b.size - a.size)
+      .slice(0, 24);
+    if (!candidates.length) {
+      setAiNotice(null);
+      return;
+    }
+    const byId = new Map(entriesRef.current.map((e) => [e.id, e]));
+    const keyToEntry = new Map<string, JudgedEntry>();
+    const items = candidates.map((entry, index) => {
+      const key = `e${index}`;
+      keyToEntry.set(key, entry);
+      return toJudgeItem(entry, byId, key);
+    });
+    setAiBusy(true);
+    try {
+      const response = await judgeDirectories(items);
+      const nextHits = new Map(hitsRef.current);
+      const nextAiIds = new Set(aiIdsRef.current);
+      for (const judgment of response.judgments) {
+        const entry = keyToEntry.get(judgment.key);
+        if (!entry) continue;
+        nextHits.set(entry.id, {
+          fingerprintId: judgment.fingerprint ?? `ai:${judgment.key}`,
+          owner: judgment.owner,
+          ownerKind: judgment.ownerKind,
+          purpose: judgment.purpose,
+          verdict: judgment.verdict,
+          confidence: judgment.confidence,
+          rebuildable: judgment.rebuildable,
+          reason: judgment.reason,
+          consequence: judgment.consequence,
+          revival: judgment.revival,
+          evidence: judgment.evidence,
+        });
+        nextAiIds.add(entry.id);
+      }
+      aiIdsRef.current = nextAiIds;
+      applyJudgment(entriesRef.current, nextHits, nextAiIds);
+      if (response.aiStatus !== "ok") setAiNotice(AI_STATUS_TEXT[response.aiStatus]);
+      else if (response.judgments.length) {
+        setAiNotice(response.cachedCount > 0
+          ? `共享知识库命中 ${response.cachedCount} 条，其余 ${response.judgments.length - response.cachedCount} 条由云端 AI 判定`
+          : `云端 AI 判定了 ${response.judgments.length} 个未识别目录`);
+      } else setAiNotice(null);
+    } catch (err) {
+      setAiNotice(`${apiErrorText(err)}；这些目录保持「需要你确认」，不会被自动删除。`);
+    } finally {
+      setAiBusy(false);
+    }
+  }, [applyJudgment]);
+
+  const runScan = useCallback(async (
+    root: FileSystemDirectoryHandle,
+    nextSource: ScanSource,
+    label: string,
+  ) => {
+    rootRef.current = root;
+    aiIdsRef.current = new Set();
+    bufferRef.current = [];
+    entriesRef.current = [];
+    judgedRef.current = [];
+    setSource(nextSource);
+    setRootLabel(label);
+    setError(null);
+    setAiNotice(null);
+    setGroups([]);
+    setSelectedIds(new Set());
+    setDrawerOpen(false);
+    setDrawerIds([]);
+    setReport(null);
+    setActions([]);
+    setScript(null);
+    setReadonlyScript(null);
+    setProgress({ ...IDLE_PROGRESS, phase: "scanning" });
+    setView("review");
+
+    const scanner = createScanner();
+    scannerRef.current = scanner;
+    try {
+      const result = await scanner.start(
+        root, DEFAULT_SCAN_OPTIONS, nextSource, label,
+        (p) => setProgress(p),
+        (batch) => { bufferRef.current.push(...batch); },
+      );
+      const all = bufferRef.current;
+      setProgress({ ...result.progress, phase: "judging" });
+      const hits = matchAll(all);
+      const judged = applyJudgment(all, hits, new Set());
+      setProgress({ ...result.progress, phase: "ready" });
+      const list = await refreshQuarantine(root);
+      await enrichWithAi(judged);
+      // 扫描后即建立/更新文件夹名录，清理后再追加运维手册
+      await writeJournal(root, null, new Set(list.filter((r) => !r.restored).map((r) => r.originalPath)));
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        // 主动停止不是失败：已经扫到的部分照常判定，并明确标注结果不完整
+        const partial = bufferRef.current;
+        if (partial.length > 0) {
+          const hits = matchAll(partial);
+          applyJudgment(partial, hits, new Set());
+          setProgress((prev) => ({ ...prev, phase: "ready", stopped: true }));
+          void refreshQuarantine(root);
+          toast.info(`已停止扫描，保留已发现的 ${partial.length} 项结果`);
+        } else {
+          setProgress({ ...IDLE_PROGRESS, phase: "ready", stopped: true });
+          toast.info("已停止扫描，尚未发现条目");
+        }
+        return;
+      }
+      setError(errorMessage(err));
+      setProgress((prev) => ({ ...prev, phase: "error" }));
+      retryRef.current = () => void runScan(root, nextSource, label);
+    } finally {
+      scannerRef.current = null;
+    }
+  }, [applyJudgment, enrichWithAi, refreshQuarantine, writeJournal]);
+
+  const handleCancelScan = useCallback(() => {
+    scannerRef.current?.cancel();
+  }, []);
+
+  // 样本磁盘已生成过就只重扫：重建会把已隔离的条目「复活」回原位置，导致还原失败
+  const handleSandbox = useCallback(async () => {
+    setSandboxBusy(true);
+    setSandboxProgress(null);
+    setError(null);
+    try {
+      const root = await openSandboxRoot();
+      if (!await sandboxReady(root)) {
+        await generateSandbox(root, (created, total) => setSandboxProgress({ created, total }));
+      }
+      await runScan(root, "sandbox", SANDBOX_LABEL);
+    } catch (err) {
+      setError(errorMessage(err));
+      setProgress((prev) => ({ ...prev, phase: "error" }));
+      retryRef.current = () => void handleSandbox();
+    } finally {
+      setSandboxBusy(false);
+      setSandboxProgress(null);
+    }
+  }, [runScan]);
+
+  // showDirectoryPicker must run inside the gesture; no await before it.
+  const handlePickLocal = useCallback(() => {
+    if (!localSupported) {
+      setError("当前浏览器不支持 File System Access API，请使用 Chrome 或 Edge，或先用示例磁盘体验完整流程。");
+      retryRef.current = handlePickLocal;
+      return;
+    }
+    void (async () => {
+      try {
+        const root = await openLocalRoot();
+        await runScan(root, "local", root.name);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setError(errorMessage(err));
+        setProgress((prev) => ({ ...prev, phase: "error" }));
+        retryRef.current = handlePickLocal;
+      }
+    })();
+  }, [localSupported, runScan]);
+
+  const handleResetSandbox = useCallback(async () => {
+    const root = rootRef.current;
+    if (!root) return;
+    setResetOpen(false);
+    setSandboxBusy(true);
+    setSandboxProgress(null);
+    try {
+      const skipPaths = new Set(records.filter((r) => !r.restored).map((r) => r.originalPath));
+      await clearSandbox(root);
+      await generateSandbox(
+        root,
+        (created, total) => setSandboxProgress({ created, total }),
+        skipPaths,
+      );
+      await runScan(root, "sandbox", SANDBOX_LABEL);
+      toast.success(skipPaths.size > 0
+        ? `样本磁盘已重置，跳过 ${skipPaths.size} 项仍在隔离区的内容`
+        : "样本磁盘已重置");
+    } catch (err) {
+      toast.error(`重置失败：${errorMessage(err)}`);
+    } finally {
+      setSandboxBusy(false);
+      setSandboxProgress(null);
+    }
+  }, [records, runScan]);
+
+  const selectedEntries = useMemo(() => {
+    const all = judgedRef.current;
+    const byId = new Map(all.map((e) => [e.id, e]));
+    const picked = all.filter(
+      (e) => selectedIds.has(e.id) && !e.locked && e.verdict !== "keep_locked",
+    );
+    const pickedIds = new Set(picked.map((e) => e.id));
+    // 父子同时勾选时只保留最上层：体积不重复累加，隔离也不会把同一份数据搬两次
+    return picked.filter((e) => {
+      let cursor = e.parentId;
+      while (cursor) {
+        if (pickedIds.has(cursor)) return false;
+        cursor = byId.get(cursor)?.parentId ?? null;
+      }
+      return true;
+    });
+  }, [selectedIds, groups]);
+  const selectedBytes = useMemo(
+    () => selectedEntries.reduce((sum, e) => sum + e.size, 0),
+    [selectedEntries],
+  );
+
+  // 选择条出现或换行时立刻重量一次，不依赖 ResizeObserver 的帧投递
+  useEffect(() => { measureDock(); }, [measureDock, selectedEntries.length, busy, view]);
+
+  const drawerEntry = useMemo(() => {
+    const id = drawerIds[drawerIndex];
+    if (!id) return null;
+    return judgedRef.current.find((e) => e.id === id) ?? null;
+  }, [drawerIds, drawerIndex, groups]);
+
+  const openEntry = useCallback((entry: JudgedEntry, visible: JudgedEntry[]) => {
+    const ids = visible.map((e) => e.id);
+    setDrawerIds(ids);
+    setDrawerIndex(Math.max(0, ids.indexOf(entry.id)));
+    setDrawerOpen(true);
+  }, []);
+
+  const navigateDrawer = useCallback((delta: number) => {
+    setDrawerIndex((prev) => clamp(prev + delta, 0, Math.max(0, drawerIds.length - 1)));
+  }, [drawerIds.length]);
+
+  const handleDownloadJournal = useCallback(async (name: string) => {
+    const root = rootRef.current;
+    if (!root) return;
+    try {
+      const text = await readJournal(root, name);
+      if (!text) {
+        toast.warning(`${name} 尚未生成，先完成一次扫描或清理。`);
+        return;
+      }
+      downloadText(name, text);
+    } catch (err) {
+      toast.error(`读取 ${name} 失败：${errorMessage(err)}`);
+    }
+  }, []);
+
+  const toggleEntry = useCallback((entry: JudgedEntry, selected: boolean) => {
+    if (entry.locked || entry.verdict === "keep_locked") return;
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (selected) next.add(entry.id); else next.delete(entry.id);
+      return next;
+    });
+  }, []);
+
+  const toggleGroup = useCallback((group: OwnerGroup, selected: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const entry of group.entries) {
+        if (entry.locked || entry.verdict === "keep_locked") continue;
+        if (selected) next.add(entry.id); else next.delete(entry.id);
+      }
+      return next;
+    });
+  }, []);
+
+  const activeRecordCount = useMemo(
+    () => records.filter((r) => !r.restored).length,
+    [records],
+  );
+  const expiredRecords = useMemo(
+    () => records.filter((r) => !r.restored && r.expiresAt <= Date.now()),
+    [records],
+  );
+
+  const handleQuarantine = useCallback(async () => {
+    const root = rootRef.current;
+    if (!root || !selectedEntries.length) return;
+    setBusy(true);
+    try {
+      await ensureWritePermission(root);
+      const skipped: string[] = [];
+      const created = await quarantineEntries(
+        root, selectedEntries, QUARANTINE_TTL_DAYS,
+        (skip) => skipped.push(skip.path),
+      );
+      if (created.length === 0) {
+        setConfirmOpen(false);
+        toast.warning(skipped.length > 0
+          ? `没有隔离任何内容：${skipped.length} 项已有未还原的隔离记录，原位置却又出现了同名内容。先到隔离区处理旧记录，再回来重试。`
+          : "没有可隔离的条目。");
+        return;
+      }
+      const moved = new Set(created.map((r) => r.originalPath));
+      // 先写审计：此时 judgedRef 仍含被移走的条目，名录才能标注「本次已移入隔离区」
+      await writeJournal(root, {
+        operation: "quarantine",
+        at: Date.now(),
+        items: itemsFromEntries(selectedEntries.filter((e) => moved.has(e.path))),
+        note: `保留 ${QUARANTINE_TTL_DAYS} 天，到期后仍需用户确认才会彻底删除。`,
+      }, moved);
+      const remaining = entriesRef.current.filter((e) =>
+        !moved.has(e.path) && ![...moved].some((p) => e.path.startsWith(`${p}/`)));
+      applyJudgment(remaining, hitsRef.current, aiIdsRef.current);
+      setSelectedIds(new Set());
+      setConfirmOpen(false);
+      setDrawerOpen(false);
+      await refreshQuarantine(root);
+      toast.success(`已隔离 ${created.length} 项（${formatBytes(created.reduce((s, r) => s + r.size, 0))}），${QUARANTINE_TTL_DAYS} 天内可一键还原`);
+      if (skipped.length > 0) {
+        toast.warning(`${skipped.length} 项被跳过：已有未还原的隔离记录，原位置却又出现了同名内容。`);
+      }
+      setView("quarantine");
+    } catch (err) {
+      toast.error(`隔离失败：${errorMessage(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [selectedEntries, applyJudgment, refreshQuarantine, writeJournal]);
+
+  const handleQuarantineOne = useCallback((entry: JudgedEntry) => {
+    setSelectedIds(new Set([entry.id]));
+    setConfirmOpen(true);
+  }, []);
+
+  const handleRestore = useCallback(async (record: QuarantineRecord) => {
+    const root = rootRef.current;
+    if (!root) return;
+    setBusyId(record.id);
+    try {
+      await ensureWritePermission(root);
+      await restoreEntries(root, [record]);
+      const list = await refreshQuarantine(root);
+      await writeJournal(root, {
+        operation: "restore",
+        at: Date.now(),
+        items: itemsFromRecords([record]),
+      }, new Set(list.filter((r) => !r.restored).map((r) => r.originalPath)));
+      toast.success(`已还原到原位置：${record.originalPath}`);
+    } catch (err) {
+      toast.error(`还原失败：${errorMessage(err)}`);
+    } finally {
+      setBusyId(null);
+    }
+  }, [refreshQuarantine, writeJournal]);
+
+  const handleDeleteRecord = useCallback(async (record: QuarantineRecord) => {
+    const root = rootRef.current;
+    if (!root) return;
+    setBusyId(record.id);
+    try {
+      await ensureWritePermission(root);
+      await deleteQuarantined(root, record);
+      const list = await refreshQuarantine(root);
+      await writeJournal(root, {
+        operation: "delete",
+        at: Date.now(),
+        items: itemsFromRecords([record]),
+        note: "用户主动彻底删除单项，已不可还原。",
+      }, new Set(list.filter((r) => !r.restored).map((r) => r.originalPath)));
+      toast.success("已彻底删除该项");
+    } catch (err) {
+      toast.error(`删除失败：${errorMessage(err)}`);
+    } finally {
+      setBusyId(null);
+    }
+  }, [refreshQuarantine, writeJournal]);
+
+  const handleClearQuarantine = useCallback(async () => {
+    const root = rootRef.current;
+    if (!root) return;
+    setBusy(true);
+    try {
+      const active = records.filter((r) => !r.restored);
+      await ensureWritePermission(root);
+      await emptyQuarantine(root);
+      const list = await refreshQuarantine(root);
+      await writeJournal(root, {
+        operation: "clear",
+        at: Date.now(),
+        items: itemsFromRecords(active),
+        note: "运维手册与文件夹名录作为审计历史保留，未随隔离区清空。",
+      }, new Set(list.filter((r) => !r.restored).map((r) => r.originalPath)));
+      toast.success("隔离区已清空");
+    } catch (err) {
+      toast.error(`清空失败：${errorMessage(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [records, refreshQuarantine, writeJournal]);
+
+  const handlePurgeExpired = useCallback(async () => {
+    const root = rootRef.current;
+    if (!root || !expiredRecords.length) return;
+    setBusy(true);
+    try {
+      await ensureWritePermission(root);
+      const remaining = await purgeExpired(root, records);
+      const keptIds = new Set(remaining.map((r) => r.id));
+      const purged = records.filter((r) => !keptIds.has(r.id));
+      setRecords(remaining);
+      await writeJournal(root, {
+        operation: "purge",
+        at: Date.now(),
+        items: itemsFromRecords(purged),
+        note: "超过保留期并经用户确认执行，已不可还原。",
+      }, new Set(remaining.filter((r) => !r.restored).map((r) => r.originalPath)));
+      toast.success(`已清理 ${purged.length} 项到期隔离内容`);
+    } catch (err) {
+      toast.error(`清理到期项失败：${errorMessage(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [expiredRecords.length, records, writeJournal]);
+
+  const diagnosisTargets = useMemo(() => {
+    const targets: string[] = [];
+    const direct = diagnoseTarget.trim();
+    if (/^[A-Za-z]:[\\/]/.test(direct)) targets.push(direct);
+    if (rootAbsPath.trim()) {
+      if (!direct && diagnoseRelative) {
+        const fromBoard = joinAbsolute(rootAbsPath, diagnoseRelative);
+        if (fromBoard) targets.push(fromBoard);
+      }
+      for (const entry of selectedEntries.slice(0, 8)) {
+        const absolute = joinAbsolute(rootAbsPath, entry.path);
+        if (absolute) targets.push(absolute);
+      }
+    }
+    return [...new Set(targets)].slice(0, 32);
+  }, [diagnoseTarget, diagnoseRelative, rootAbsPath, selectedEntries]);
+
+  // 复活提示必须能一键跳到诊断，并把目标与症状预填好，而不是让用户自己再找一遍
+  const openDiagnoseFor = useCallback((
+    name: string,
+    path: string,
+    revival: RevivalMechanism[],
+  ) => {
+    const absolute = joinAbsolute(rootAbsPath, path);
+    if (absolute) setDiagnoseTarget(absolute);
+    setDiagnoseRelative(path);
+    const mechanisms = [...new Set(revival)].map((m) => REVIVAL_LABEL[m] ?? m).join("、");
+    setSymptoms((prev) => prev.trim() ? prev : `删除「${name}」后它又自己出现了${mechanisms ? `，疑似${mechanisms}在重建` : ""}。`);
+    setDrawerOpen(false);
+    setDiagnoseError(null);
+    setView("diagnose");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [rootAbsPath]);
+
+  const handleDiagnoseGroup = useCallback((group: OwnerGroup) => {
+    const target = group.entries.find((e) => (e.hit?.revival.length ?? 0) > 0) ?? group.entries[0];
+    if (!target) return;
+    openDiagnoseFor(target.name, target.path, group.revival);
+  }, [openDiagnoseFor]);
+
+  const handleDiagnoseEntry = useCallback((entry: JudgedEntry) => {
+    openDiagnoseFor(entry.name, entry.path, entry.hit?.revival ?? []);
+  }, [openDiagnoseFor]);
+
+  const handleReadonlyScript = useCallback(() => {
+    setDiagnoseError(null);
+    if (!diagnosisTargets.length) {
+      setDiagnoseError("请先填写问题文件夹的完整路径（例如 C:\\Program Files\\SomeApp）。浏览器出于隐私保护不会告诉我们完整路径，需要你从资源管理器地址栏复制。");
+      return;
+    }
+    try {
+      setReadonlyScript(buildReadOnlyDiagnosticScript(diagnosisTargets));
+    } catch (err) {
+      setDiagnoseError(errorMessage(err));
+    }
+  }, [diagnosisTargets]);
+
+  const handleDiagnose = useCallback(async () => {
+    const subject = diagnoseTarget.trim()
+      ? diagnoseTarget.trim().split(/[\\/]/).filter(Boolean).pop() ?? ""
+      : selectedEntries[0]?.name
+        ?? diagnoseRelative.split("/").filter(Boolean).pop()
+        ?? "";
+    if (!subject) {
+      setDiagnoseError("请先填写问题文件夹路径，或在审核台勾选至少一项。");
+      return;
+    }
+    if (!symptoms.trim()) {
+      setDiagnoseError("请描述症状，例如「删掉后又出现在 C 盘」「资源管理器里找不到」「提示在别处打开」。");
+      return;
+    }
+    setDiagnoseBusy(true);
+    setDiagnoseError(null);
+    try {
+      const response = await requestDiagnosis({
+        subject,
+        symptoms: symptoms.trim(),
+        scriptOutput: scriptOutput.trim() || null,
+      });
+      if (!response.report) {
+        setDiagnoseError(AI_STATUS_TEXT[response.aiStatus]);
+        return;
+      }
+      setReport(response.report);
+      setActions(planCleanupActions(response.report));
+      setScript(null);
+      if (response.aiStatus !== "ok") toast.warning(AI_STATUS_TEXT[response.aiStatus]);
+    } catch (err) {
+      setDiagnoseError(apiErrorText(err));
+    } finally {
+      setDiagnoseBusy(false);
+    }
+  }, [diagnoseTarget, diagnoseRelative, selectedEntries, symptoms, scriptOutput]);
+
+  const toggleAction = useCallback((action: CleanupAction, selected: boolean) => {
+    setActions((prev) => prev.map((a) => a.id === action.id ? { ...a, selected } : a));
+    setScript(null);
+  }, []);
+
+  const handleGenerateScript = useCallback(() => {
+    const chosen = actions.filter((a) => a.selected);
+    if (!chosen.length) {
+      toast.warning("请至少勾选一项清理动作。高危项默认不勾选。");
+      return;
+    }
+    try {
+      setScript(buildCleanupScript(chosen));
+      toast.success("脚本已生成，建议先 dry-run 查看将要执行的操作");
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  }, [actions]);
+
+  const uninstallGuidance = useMemo(
+    () => (report ? resolveUninstallGuidance(report) : null),
+    [report],
+  );
+
+  const phase: ScanPhase = progress.phase;
+  const scanning = phase === "scanning" || phase === "judging";
+  const boardItemCount = useMemo(
+    () => groups.reduce((sum, g) => sum + g.itemCount, 0),
+    [groups],
+  );
+  const revivalGroups = useMemo(
+    () => groups.filter((g) => g.revival.length > 0),
+    [groups],
+  );
+
+  return (
+    <TooltipProvider delayDuration={200}>
+      <div className="relative min-h-dvh text-foreground">
+        <div aria-hidden className="dc-space" />
+        <div aria-hidden className="dc-grain" />
+
+        <div
+          className="relative z-10 mx-auto w-full max-w-6xl px-4 sm:px-6"
+          style={{ paddingBottom: dockHeight + 24 }}
+        >
+          <AppHeader
+            source={source}
+            rootLabel={rootLabel}
+            phase={phase}
+            localSupported={localSupported}
+            onUseSandbox={() => void handleSandbox()}
+            onPickLocal={handlePickLocal}
+          />
+
+          <main className="grid gap-4 pt-4">
+            {source === null ? (
+              <>
+                <LandingHero
+                  onGenerate={() => void handleSandbox()}
+                  generating={sandboxBusy}
+                  progress={sandboxProgress}
+                  onPickLocal={handlePickLocal}
+                  localSupported={localSupported}
+                />
+                {!localSupported && (
+                  <ErrorState
+                    unsupported
+                    message="当前浏览器不支持访问本地磁盘（需要 Chrome / Edge 的 File System Access API）。你仍然可以用样本磁盘完整体验扫描、分类审核、隔离与还原。"
+                    onUseSandbox={() => void handleSandbox()}
+                  />
+                )}
+                {error && (
+                  <ErrorState
+                    message={error}
+                    onRetry={() => retryRef.current()}
+                    onUseSandbox={() => void handleSandbox()}
+                  />
+                )}
+                <Panel className="dc-tone-info dc-rail grid gap-1.5 rounded-xl px-4 py-3.5">
+                  <h2 className="dc-display flex items-center gap-2 text-sm font-semibold tracking-wide">
+                    <ShieldCheck aria-hidden className="dc-tone-text size-4" />
+                    能力边界，先说清楚
+                  </h2>
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    浏览器读不到注册表、服务与卸载器，这是能力边界而不是权限问题。
+                    所以「删了又复活」的顽固软件走两步：洁灵生成<strong className="text-foreground">只读</strong>诊断脚本，
+                    你在本机运行后把 JSON 粘回来，AI 再给出复活机制、官方卸载路径与逐项可选的清理脚本。
+                    任何触及注册表或卸载的动作，都会先向你申请确认。
+                  </p>
+                </Panel>
+              </>
+            ) : (
+              <>
+                <div data-region="scan-bar" className="grid gap-1.5">
+                  <ScanStatusBar
+                    progress={progress}
+                    rootLabel={rootLabel}
+                    onCancel={handleCancelScan}
+                  />
+                  <p className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
+                    <ShieldCheck aria-hidden className="dc-tone-safe dc-tone-text size-3.5 shrink-0" />
+                    {PRODUCT_PHILOSOPHY}
+                  </p>
+                </div>
+
+                {error && (
+                  <ErrorState
+                    message={error}
+                    onRetry={() => { const root = rootRef.current; if (root) void runScan(root, source, rootLabel); }}
+                    onUseSandbox={source === "local" ? () => void handleSandbox() : undefined}
+                  />
+                )}
+
+                {(aiNotice || aiBusy) && (
+                  <div className="dc-panel dc-rail dc-tone-ai flex items-start gap-3 rounded-xl px-4 py-3">
+                    {aiBusy
+                      ? <Spinner className="dc-tone-text mt-0.5 size-4 shrink-0" />
+                      : <Sparkles aria-hidden className="dc-tone-text mt-0.5 size-4 shrink-0" />}
+                    <div className="grid gap-0.5">
+                      <p className="dc-display text-sm font-semibold tracking-wide">
+                        {aiBusy ? "云端 AI 正在判定未识别目录" : "云端 AI 判定"}
+                      </p>
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        {aiBusy
+                          ? "只发送目录名与结构，不发送文件内容；用户名已脱敏。判定期间你仍可以先审核已有结果。"
+                          : aiNotice}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {revivalGroups.length > 0 && (
+                  <div className="dc-panel dc-rail dc-tone-review flex flex-wrap items-start gap-3 rounded-xl px-4 py-3">
+                    <TriangleAlert aria-hidden className="dc-tone-text mt-0.5 size-4 shrink-0" />
+                    <div className="grid min-w-0 flex-1 gap-1">
+                      <p className="dc-display text-sm font-semibold tracking-wide">
+                        {revivalGroups.length} 个软件可能「删了又复活」
+                      </p>
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        {revivalGroups.slice(0, 3).map((g) =>
+                          `${g.owner}（${[...new Set(g.revival)].map((m) => REVIVAL_LABEL[m] ?? m).join("、")}）`).join("；")}
+                        。直接删文件夹无效，先切断来源。
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="dc-tone-review dc-tone-text"
+                      onClick={() => handleDiagnoseGroup(revivalGroups[0])}
+                    >
+                      <Stethoscope aria-hidden />
+                      去复活诊断
+                    </Button>
+                  </div>
+                )}
+
+                <Tabs value={view} onValueChange={setView}>
+                  <TabsList className="dc-panel h-auto w-full flex-wrap justify-start gap-1 rounded-xl p-1.5">
+                    <TabsTrigger value="review" className={TAB_CLASS}>
+                      <ListChecks aria-hidden />
+                      分类审核台
+                      {boardItemCount > 0 && <span className="dc-num text-xs opacity-70">{boardItemCount}</span>}
+                    </TabsTrigger>
+                    <TabsTrigger value="quarantine" className={TAB_CLASS}>
+                      <Archive aria-hidden />
+                      隔离区
+                      {activeRecordCount > 0 && <span className="dc-num text-xs opacity-70">{activeRecordCount}</span>}
+                    </TabsTrigger>
+                    <TabsTrigger value="diagnose" className={TAB_CLASS}>
+                      <Stethoscope aria-hidden />
+                      复活诊断
+                      {revivalGroups.length > 0 && <span className="dc-num text-xs opacity-70">{revivalGroups.length}</span>}
+                    </TabsTrigger>
+                    <TabsTrigger value="knowledge" className={TAB_CLASS}>
+                      <BookOpen aria-hidden />
+                      知识库 Skill
+                    </TabsTrigger>
+                  </TabsList>
+
+                  <TabsContent value="review" className="mt-4">
+                    <div data-region="review-board">
+                      {groups.length === 0 && scanning ? (
+                        <ReviewBoard
+                          groups={groups}
+                          selectedIds={selectedIds}
+                          onToggleEntry={toggleEntry}
+                          onToggleGroup={toggleGroup}
+                          onOpenEntry={openEntry}
+                          loading
+                        />
+                      ) : groups.length === 0 ? (
+                        <EmptyState
+                          title={progress.stopped ? "已停止扫描，没有发现条目" : "这个目录下没有可清理的内容"}
+                          description={progress.stopped
+                            ? "扫描被手动停止且尚未发现条目。可以重新扫描，或换一个目录。"
+                            : "没有发现缓存、临时文件或残留目录。可以换一个目录，或重置样本磁盘。"}
+                          action={source === "sandbox"
+                            ? <Button variant="outline" onClick={() => setResetOpen(true)} disabled={sandboxBusy}>
+                                <RefreshCw aria-hidden />重置样本磁盘
+                              </Button>
+                            : <Button variant="outline" onClick={handlePickLocal}>
+                                <FolderSearch aria-hidden />换一个文件夹
+                              </Button>}
+                        />
+                      ) : (
+                        <ReviewBoard
+                          groups={groups}
+                          selectedIds={selectedIds}
+                          onToggleEntry={toggleEntry}
+                          onToggleGroup={toggleGroup}
+                          onOpenEntry={openEntry}
+                          onDiagnose={handleDiagnoseGroup}
+                          activeEntryId={drawerOpen ? drawerEntry?.id ?? null : null}
+                          loading={scanning}
+                          scannedCount={judgedRef.current.length}
+                          truncated={progress.truncated}
+                          stopped={progress.stopped}
+                          source={source}
+                          onResetSandbox={() => setResetOpen(true)}
+                          resetting={sandboxBusy}
+                        />
+                      )}
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="quarantine" className="mt-4">
+                    <div data-region="quarantine" className="grid gap-3">
+                      {expiredRecords.length > 0 && (
+                        <div className="dc-panel dc-rail dc-tone-danger flex flex-wrap items-center gap-3 rounded-xl px-4 py-3">
+                          <TriangleAlert aria-hidden className="dc-tone-text size-4 shrink-0" />
+                          <p className="min-w-0 flex-1 text-xs leading-relaxed text-muted-foreground">
+                            <strong className="dc-tone-text text-sm">
+                              {expiredRecords.length} 项已超过 {QUARANTINE_TTL_DAYS} 天保留期。
+                            </strong>
+                            到期清理会彻底删除这些内容，不可还原，需要你确认后执行。
+                          </p>
+                          <Button size="sm" variant="destructive" onClick={() => void handlePurgeExpired()} disabled={busy}>
+                            {busy ? <Spinner /> : <TriangleAlert aria-hidden />}
+                            清理到期项
+                          </Button>
+                        </div>
+                      )}
+
+                      <QuarantineView
+                        records={records}
+                        onRestore={(record) => void handleRestore(record)}
+                        onDelete={(record) => void handleDeleteRecord(record)}
+                        onClearAll={() => void handleClearQuarantine()}
+                        busyId={busyId}
+                      />
+
+                      <Panel className="grid gap-2.5 rounded-xl px-4 py-3.5">
+                        <h2 className="dc-display flex items-center gap-2 text-sm font-semibold tracking-wide">
+                          <FileDown aria-hidden className="size-4 text-muted-foreground" />
+                          运维手册与文件夹名录
+                        </h2>
+                        <p className="text-xs leading-relaxed text-muted-foreground">
+                          每次扫描与清理后，{PRODUCT_NAME}会在隔离区目录内自动写入两份 md：
+                          <code className="dc-path mx-1 rounded bg-muted px-1 py-0.5">{OPS_MANUAL_NAME}</code>
+                          记录做了什么、为什么、怎么撤回；
+                          <code className="dc-path mx-1 rounded bg-muted px-1 py-0.5">{FOLDER_DICTIONARY_NAME}</code>
+                          给每个文件夹名标注它是什么、归属谁、能不能删。清空隔离区不会抹掉这两份审计历史。
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          <Button variant="outline" size="sm" onClick={() => void handleDownloadJournal(OPS_MANUAL_NAME)}>
+                            <FileDown aria-hidden />下载运维手册
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => void handleDownloadJournal(FOLDER_DICTIONARY_NAME)}>
+                            <FileDown aria-hidden />下载文件夹名录
+                          </Button>
+                        </div>
+                      </Panel>
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="diagnose" className="mt-4">
+                    <div data-region="diagnose" className="grid gap-4">
+                      <Panel className="dc-tone-info dc-rail grid gap-1.5 rounded-xl px-4 py-3.5">
+                        <h2 className="dc-display flex items-center gap-2 text-sm font-semibold tracking-wide">
+                          <ShieldCheck aria-hidden className="dc-tone-text size-4" />
+                          为什么删不掉：先断根，再删文件
+                        </h2>
+                        <p className="text-xs leading-relaxed text-muted-foreground">
+                          浏览器无法访问注册表、服务与卸载器——这是能力边界，不是权限问题。所以这里分两步：
+                          ① 生成<strong className="text-foreground">只读</strong>诊断脚本，由你在本机运行（UAC 会向你申请授权），把输出的 JSON 粘回来；
+                          ② AI 据此给出复活机制、官方卸载路径与逐项可选的清理脚本。清理脚本默认 dry-run，高危项默认不勾选。
+                        </p>
+                      </Panel>
+
+                      <Panel className="grid gap-3.5 rounded-xl px-4 py-4">
+                        <div className="grid gap-1.5">
+                          <Label htmlFor="root-abs" className="dc-label text-muted-foreground">
+                            扫描根目录的完整路径（可选）
+                          </Label>
+                          <Input
+                            id="root-abs"
+                            value={rootAbsPath}
+                            placeholder="C:\Users\你的用户名\AppData\Local"
+                            className="dc-path"
+                            onChange={(event) => {
+                              setRootAbsPath(event.target.value);
+                              localStorage.setItem("dareclean.rootAbsPath", event.target.value);
+                            }}
+                          />
+                          <p className="text-xs leading-relaxed text-muted-foreground">
+                            填写后，审核台勾选的条目会自动换算成绝对路径作为诊断目标。浏览器出于隐私不返回完整路径，需要你从资源管理器地址栏复制。
+                          </p>
+                        </div>
+                        {diagnoseRelative && (
+                          <p className="dc-tone-ai dc-tone-bg dc-tone-border flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs">
+                            <ToneDot tone="dc-tone-ai" />
+                            <span className="dc-tone-text font-medium">来自审核台的诊断目标</span>
+                            <code className="dc-path text-muted-foreground">{diagnoseRelative}</code>
+                            <span className="w-full text-muted-foreground">
+                              {diagnosisTargets.length > 0
+                                ? `已换算为 ${diagnosisTargets[0]}`
+                                : "填写上方「扫描根目录的完整路径」后，即可换算成绝对路径并生成只读脚本。"}
+                            </span>
+                          </p>
+                        )}
+                        <div className="grid gap-1.5">
+                          <Label htmlFor="diagnose-target" className="dc-label text-muted-foreground">
+                            问题文件夹完整路径
+                          </Label>
+                          <Input
+                            id="diagnose-target"
+                            value={diagnoseTarget}
+                            placeholder="C:\Program Files\SomeCloudDrive"
+                            className="dc-path"
+                            onChange={(event) => setDiagnoseTarget(event.target.value)}
+                          />
+                        </div>
+                        <div className="grid gap-1.5">
+                          <Label htmlFor="symptoms" className="dc-label text-muted-foreground">症状描述</Label>
+                          <Textarea
+                            id="symptoms"
+                            value={symptoms}
+                            rows={3}
+                            placeholder="删掉后又出现在 C 盘；资源管理器里找不到这个文件夹；一直提示「在别处打开」；卸载入口找不到。"
+                            onChange={(event) => setSymptoms(event.target.value)}
+                          />
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button variant="outline" onClick={handleReadonlyScript} disabled={diagnoseBusy}>
+                            <FileDown aria-hidden />
+                            生成只读诊断脚本
+                          </Button>
+                          {readonlyScript && (
+                            <Button
+                              variant="outline"
+                              onClick={() => downloadText("dareclean-diagnose.ps1", readonlyScript)}
+                            >
+                              <FileDown aria-hidden />
+                              下载 dareclean-diagnose.ps1
+                            </Button>
+                          )}
+                          <Button onClick={() => void handleDiagnose()} disabled={diagnoseBusy}>
+                            {diagnoseBusy ? <Spinner /> : <Sparkles aria-hidden />}
+                            {diagnoseBusy ? "AI 诊断中…" : "AI 诊断并给出处方"}
+                          </Button>
+                        </div>
+                        {readonlyScript && (
+                          <p className="text-xs leading-relaxed text-muted-foreground">
+                            在本机 PowerShell 运行：
+                            <code className="dc-path mx-1 rounded bg-muted px-1 py-0.5">
+                              powershell -ExecutionPolicy Bypass -File .\dareclean-diagnose.ps1 &gt; diagnosis.json
+                            </code>
+                            该脚本只枚举与读取，不删除、不修改任何内容。
+                          </p>
+                        )}
+                        <div className="grid gap-1.5">
+                          <Label htmlFor="script-output" className="dc-label text-muted-foreground">
+                            只读脚本输出（可选，粘贴 diagnosis.json 内容）
+                          </Label>
+                          <Textarea
+                            id="script-output"
+                            value={scriptOutput}
+                            rows={5}
+                            className="dc-path"
+                            placeholder="不粘贴也可以诊断，但 AI 只能凭症状推断，置信度会偏低。"
+                            onChange={(event) => setScriptOutput(event.target.value)}
+                          />
+                        </div>
+                        {diagnoseError && (
+                          <p role="alert" className="dc-tone-danger dc-tone-bg dc-tone-border dc-tone-text rounded-lg border px-3 py-2 text-xs leading-relaxed">
+                            {diagnoseError}
+                          </p>
+                        )}
+                      </Panel>
+
+                      {uninstallGuidance && (
+                        <Panel className="dc-tone-safe dc-rail grid gap-2 rounded-xl px-4 py-3.5">
+                          <h3 className="dc-display flex items-center gap-2 text-sm font-semibold tracking-wide">
+                            <ShieldCheck aria-hidden className="dc-tone-text size-4" />
+                            {uninstallGuidance.preferOfficial ? "优先走官方卸载器" : "未找到可信的官方卸载器"}
+                          </h3>
+                          <ol className="ml-4 grid list-decimal gap-1 text-xs leading-relaxed text-muted-foreground">
+                            {uninstallGuidance.steps.map((step, index) => <li key={index}>{step}</li>)}
+                          </ol>
+                          {uninstallGuidance.warning && (
+                            <p className="dc-tone-danger dc-tone-text text-xs leading-relaxed">
+                              {uninstallGuidance.warning}
+                            </p>
+                          )}
+                        </Panel>
+                      )}
+
+                      {report?.advice && (
+                        <Panel className="dc-tone-ai dc-rail grid gap-1.5 rounded-xl px-4 py-3.5">
+                          <h3 className="dc-display flex items-center gap-2 text-sm font-semibold tracking-wide">
+                            <Sparkles aria-hidden className="dc-tone-text size-4" />
+                            AI 建议
+                          </h3>
+                          <p className="text-xs leading-relaxed text-muted-foreground">{report.advice}</p>
+                        </Panel>
+                      )}
+
+                      <DiagnosePanel
+                        report={report}
+                        actions={actions}
+                        onToggleAction={toggleAction}
+                        onGenerateScript={handleGenerateScript}
+                        onDownloadScript={() => { if (script) downloadText("dareclean-cleanup.ps1", script); }}
+                        loading={diagnoseBusy}
+                        scriptReady={Boolean(script)}
+                      />
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="knowledge" className="mt-4">
+                    <div data-region="knowledge" className="grid gap-4">
+                      <Panel className="dc-tone-ai dc-rail grid gap-1.5 rounded-xl px-4 py-3.5">
+                        <h2 className="dc-display flex items-center gap-2 text-sm font-semibold tracking-wide">
+                          <BookOpen aria-hidden className="dc-tone-text size-4" />
+                          知识库就是 Skill
+                        </h2>
+                        <p className="text-xs leading-relaxed text-muted-foreground">
+                          全部判定规则以 markdown 书写，是唯一真源；构建时编译成指纹库，并打包为可安装的 Qoder Skill。
+                          把 skill 目录放进 Qoder 的技能目录，就能复用这套「{PRODUCT_PHILOSOPHY}」的方法论。
+                        </p>
+                      </Panel>
+
+                      <Panel className="grid gap-3 rounded-xl px-4 py-4">
+                        <h3 className="dc-label text-muted-foreground">Skill 入口</h3>
+                        <a
+                          href="/skill/SKILL.md"
+                          download="SKILL.md"
+                          className="dc-panel dc-lift flex items-center gap-2 rounded-lg px-3 py-2.5 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                        >
+                          <FileDown aria-hidden className="size-4 shrink-0 text-primary" />
+                          <span className="font-medium">SKILL.md</span>
+                          <span className="ml-auto hidden text-xs text-muted-foreground sm:inline">
+                            方法论、能力边界、复活机制、脚本安全红线、规则格式
+                          </span>
+                        </a>
+
+                        <h3 className="dc-label mt-1 text-muted-foreground">指纹规则（{RULE_FILES.length} 份 md）</h3>
+                        <ul className="grid gap-1.5 sm:grid-cols-2">
+                          {RULE_FILES.map(({ file, label }) => (
+                            <li key={file}>
+                              <a
+                                href={`/skill/references/rules/${file}`}
+                                download={file}
+                                className="dc-row flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                              >
+                                <ToneDot tone="dc-tone-info" />
+                                <span className="dc-path truncate">{file}</span>
+                                <span className="ml-auto shrink-0 text-xs text-muted-foreground">{label}</span>
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
+
+                        <a
+                          href="/skill/references/fingerprints.json"
+                          download="fingerprints.json"
+                          className="dc-panel dc-lift flex items-center gap-2 rounded-lg px-3 py-2.5 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                        >
+                          <FileDown aria-hidden className="size-4 shrink-0 text-primary" />
+                          <span className="font-medium">fingerprints.json</span>
+                          <span className="ml-auto hidden text-xs text-muted-foreground sm:inline">由 md 编译出的指纹库，与规则同源</span>
+                        </a>
+                        <p className="text-xs leading-relaxed text-muted-foreground">
+                          改规则请改 md，再重新编译；不要直接编辑 fingerprints.json，否则会与真源漂移。
+                        </p>
+                      </Panel>
+                    </div>
+                  </TabsContent>
+                </Tabs>
+              </>
+            )}
+
+            <footer className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-hairline pt-3 text-[11px] text-muted-foreground">
+              <span className="dc-display tracking-wide">{PRODUCT_NAME}</span>
+              <span aria-hidden className="text-hairline">/</span>
+              <span>{PRODUCT_PHILOSOPHY}</span>
+              <span className="ml-auto">扫描与判定在浏览器内完成 · 隔离 {QUARANTINE_TTL_DAYS} 天 · 彻底删除始终需要你确认</span>
+            </footer>
+          </main>
+        </div>
+
+        <div ref={dockRef} className="fixed inset-x-0 bottom-0 z-40 px-4 pb-4 sm:px-6">
+          <div data-region="selection-summary">
+            <SelectionSummaryBar
+              selectedCount={selectedEntries.length}
+              selectedBytes={selectedBytes}
+              onQuarantine={() => setConfirmOpen(true)}
+              onClear={() => setSelectedIds(new Set())}
+              busy={busy}
+              awayFromReview={view !== "review"}
+              onGoReview={() => setView("review")}
+            />
+          </div>
+        </div>
+
+        <EntryDrawer
+          entry={drawerEntry}
+          open={drawerOpen && drawerEntry !== null}
+          onOpenChange={setDrawerOpen}
+          selected={drawerEntry ? selectedIds.has(drawerEntry.id) : false}
+          onToggleSelect={toggleEntry}
+          onQuarantine={handleQuarantineOne}
+          onDiagnose={handleDiagnoseEntry}
+          onNavigate={navigateDrawer}
+          position={drawerEntry ? { index: drawerIndex, total: drawerIds.length } : null}
+          busy={busy}
+        />
+
+        <ConfirmQuarantineDialog
+          open={confirmOpen}
+          onOpenChange={setConfirmOpen}
+          entries={selectedEntries}
+          onConfirm={() => void handleQuarantine()}
+          busy={busy}
+        />
+
+        <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>
+          <AlertDialogContent className="dc-panel dc-tone-review rounded-xl">
+            <AlertDialogHeader>
+              <AlertDialogTitle className="dc-display tracking-wide">重置样本磁盘？</AlertDialogTitle>
+              <AlertDialogDescription>
+                会清空沙箱里的样本目录并重新生成一套。
+                {activeRecordCount > 0
+                  ? `仍在隔离区的 ${activeRecordCount} 项会被跳过，不会重新出现在原位置，你的隔离与还原记录保持有效。`
+                  : "当前隔离区为空，重置不会影响任何真实数据。"}
+                真实磁盘不受影响。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>取消</AlertDialogCancel>
+              <AlertDialogAction onClick={() => void handleResetSandbox()}>
+                <RefreshCw aria-hidden />
+                确认重置
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <Toaster />
+      </div>
+    </TooltipProvider>
+  );
+}

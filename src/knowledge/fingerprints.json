@@ -1,0 +1,2013 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "2345-family",
+      "glob": [
+        "2345*"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.7,
+      "revival": [
+        "autostart_service",
+        "scheduled_task",
+        "run_key",
+        "missing_uninstaller"
+      ],
+      "owner": "2345 全家桶",
+      "purpose": "2345 系软件（浏览器/看图王/好压/安全卫士等）的安装或数据目录",
+      "reason": "2345 系常随下载站安装包捆绑进场，卸载后残留目录、服务和计划任务齐全，是「删了又复活」的典型；但也要先确认不是你自己装着在用的。",
+      "consequence": "直接删文件夹大概率被残留服务/计划任务重建。正确顺序：确认已卸载 → 禁用相关服务与计划任务、清理启动项 → 再删目录。仍在使用的组件请走官方卸载器。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "360-family",
+      "name": [
+        "360Safe",
+        "360sd",
+        "360Zip",
+        "360Chrome",
+        "360se6",
+        "360Total Security"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.65,
+      "revival": [
+        "autostart_service",
+        "driver_protected",
+        "scheduled_task",
+        "run_key"
+      ],
+      "owner": "360 系软件",
+      "purpose": "360 安全卫士/杀毒/压缩/浏览器等组件的安装或数据目录",
+      "reason": "360 系组件互相拉起、带自保护驱动，卸载残留是「复活」重灾区；但如果你正在用 360，删目录会直接破坏防护功能。",
+      "consequence": "在用请走官方卸载器（自保护驱动会拦截手动删除）；已卸载仍有残留时，先处理其服务与驱动项再清目录，必要时进安全模式操作。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "adobe-media-cache",
+      "name": [
+        "Media Cache",
+        "Media Cache Files"
+      ],
+      "pathContains": [
+        "Adobe"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "Adobe Premiere / After Effects",
+      "purpose": "Adobe 视频剪辑工具的媒体缓存（音频波形、预览索引）",
+      "reason": "剪辑时为了流畅预览生成的索引文件，动辄几十 GB；素材原件不在这里，Adobe 官方支持在首选项里清理。",
+      "consequence": "删掉后重新打开工程会重新生成缓存，大工程首次预览卡顿一会儿；工程文件和素材完全不受影响。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "aliyun-quark-residue",
+      "name": [
+        "aDrive",
+        "aliyunpan",
+        "Quark",
+        "QuarkCloudDrive",
+        "夸克"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.6,
+      "revival": [
+        "run_key",
+        "autostart_service",
+        "missing_uninstaller"
+      ],
+      "owner": "阿里云盘 / 夸克网盘",
+      "purpose": "阿里云盘或夸克网盘客户端的数据与缓存目录",
+      "reason": "在用则含账号配置与传输缓存；卸载后属残留。这类客户端普遍带开机启动和后台服务，残留目录可能被重新创建。",
+      "consequence": "未卸载时删除会丢登录状态和传输记录；已卸载请先断启动项与服务再删目录，避免复活。下载目录里的个人文件请另行甄别。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "backup-dirs",
+      "glob": [
+        "*backup*",
+        "*备份*"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.6,
+      "revival": [],
+      "owner": "用户/软件备份",
+      "purpose": "名称表明是备份用途的目录",
+      "reason": "备份是数据的最后一道保险，可能是手机备份、数据库 dump 或软件自动备份；旧备份可清，但要先确认有更新的副本。",
+      "consequence": "删掉唯一备份后，一旦原数据出事就彻底无法恢复。请按时间保留最近一份，确认冗余后再清理旧备份。",
+      "ownerKind": "unknown",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "baidu-download-dir",
+      "name": [
+        "BaiduNetdiskDownload",
+        "BaiduYunDownload"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.75,
+      "revival": [],
+      "owner": "百度网盘",
+      "purpose": "百度网盘的默认下载目录",
+      "reason": "这里是你主动从网盘下载回来的文件，可能混着看完的安装包和舍不得删的资料，不能当缓存一刀切。",
+      "consequence": "删除后本地副本消失；若网盘云端原件还在可重新下载，但下载耗时耗流量，部分分享链接可能已失效。建议逐个甄别。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "baidu-residue",
+      "name": [
+        "BaiduNetdisk",
+        "BaiduYunGuanjia",
+        "baidu"
+      ],
+      "pathRegex": [
+        "AppData|Program Files"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.6,
+      "revival": [
+        "run_key",
+        "autostart_service",
+        "missing_uninstaller"
+      ],
+      "owner": "百度网盘",
+      "purpose": "百度网盘客户端的配置、缓存与组件目录",
+      "reason": "若网盘还在用，删了会丢配置甚至客户端损坏；若已卸载，这是残留，但它的后台服务和启动项可能还在，直接删文件夹会被重建。",
+      "consequence": "先确认是否已卸载：未卸载请走官方卸载器；已卸载则先禁用相关启动项/服务/计划任务，再删目录，否则「删了又长出来」。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "bower-components",
+      "name": [
+        "bower_components"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.88,
+      "revival": [],
+      "owner": "Bower",
+      "purpose": "老牌前端包管理器 Bower 下载的依赖目录",
+      "reason": "和 node_modules 同理，全是 bower.json 里声明的第三方库，可重新安装。Bower 已停止维护，这类目录多为老项目遗留。",
+      "consequence": "删掉后老项目需 bower install 恢复；若项目已迁移到 npm，这个目录就是纯遗留垃圾。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "chrome-cache",
+      "name": [
+        "Cache",
+        "Code Cache",
+        "GPUCache",
+        "GrShaderCache",
+        "ShaderCache",
+        "DawnCache",
+        "DawnGraphiteCache",
+        "DawnWebGPUCache"
+      ],
+      "pathRegex": [
+        "(Google/Chrome|Chromium)/User Data"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.92,
+      "revival": [
+        "process_lock"
+      ],
+      "owner": "Chrome",
+      "purpose": "Chrome 的网页缓存、JS 字节码缓存和 GPU 着色器缓存",
+      "reason": "浏览器把看过的网页图片、脚本临时存在这里以便下次秒开，全部可以重新下载，不含账号密码和书签。",
+      "consequence": "删掉后常逛的网站首次打开稍慢（重新下载资源），登录状态、书签、密码都不受影响。建议先关闭 Chrome，否则部分文件被占用删不掉。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "chrome-crashpad",
+      "name": [
+        "Crashpad"
+      ],
+      "pathRegex": [
+        "Google/Chrome|Chromium"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.88,
+      "revival": [],
+      "owner": "Chrome",
+      "purpose": "Chrome 崩溃时生成的错误报告与转储文件",
+      "reason": "只有浏览器崩溃时才写东西，是给开发者排障用的报告，对普通用户没有保留价值。",
+      "consequence": "删掉不影响浏览器任何功能，只是丢失历史崩溃记录；如果最近频繁崩溃想排查原因，可以先留着。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "chrome-service-worker",
+      "pathRegex": [
+        "(Google/Chrome|Chromium)/User Data/[^/]+/Service Worker/(CacheStorage|ScriptCache)$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.85,
+      "revival": [
+        "process_lock"
+      ],
+      "owner": "Chrome",
+      "purpose": "网站 Service Worker 的离线资源与脚本缓存（PWA 离线页面）",
+      "reason": "存的是网站为了离线可用而预存的资源副本，网站本身的数据在服务器上，删了会按需重新拉取。",
+      "consequence": "某些网站的离线功能暂时失效，下次联网访问时自动重建；个别 PWA 应用可能需要刷新一次。先关闭浏览器再删。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "cmake-gradle-build",
+      "name": [
+        "build"
+      ],
+      "markers": [
+        "CMakeCache.txt",
+        "CMakeFiles",
+        "cmake_install.cmake",
+        "classes",
+        "generated",
+        "intermediates",
+        "outputs",
+        "maven-status",
+        "surefire-reports",
+        "test-results"
+      ],
+      "kind": "directory",
+      "requireMarkers": true,
+      "rebuildable": true,
+      "confidence": 0.8,
+      "revival": [],
+      "owner": "CMake / Gradle",
+      "purpose": "C++（CMake）或安卓/Java（Gradle）项目的构建输出目录",
+      "reason": "内部有 CMakeCache.txt 或 classes/intermediates 等构建特征，确认是编译产物目录而非手工整理的资料夹。",
+      "consequence": "删掉后重新构建即可恢复，C++ 大项目全量编译较耗时；不影响任何源代码。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "cocoapods-cache",
+      "pathRegex": [
+        "/Library/Caches/CocoaPods$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.9,
+      "revival": [],
+      "owner": "CocoaPods",
+      "purpose": "iOS/macOS 依赖管理工具 CocoaPods 的下载缓存",
+      "reason": "缓存的是 pod 依赖包副本，pod install 时会按需重新下载。",
+      "consequence": "下次 pod install 重新下载依赖，耗时增加，不影响工程源码。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "coverage-report",
+      "name": [
+        "coverage",
+        "htmlcov",
+        ".nyc_output"
+      ],
+      "markers": [
+        "lcov.info",
+        "coverage-final.json",
+        "lcov-report",
+        "index.html",
+        "status.json",
+        "*.lcov",
+        "cobertura.xml",
+        "jacoco.xml",
+        "processinfo"
+      ],
+      "kind": "directory",
+      "requireMarkers": true,
+      "rebuildable": true,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "测试覆盖率工具",
+      "purpose": "测试覆盖率报告（istanbul/coverage.py/jacoco 等生成）",
+      "reason": "有 lcov.info、coverage-final.json 等特征，确认是覆盖率报告而非同名资料夹；报告跑一次测试就能重新生成。",
+      "consequence": "删掉后历史覆盖率报告消失，重新跑测试即可再生；如果团队要留档某次报告，请先归档。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "d3dscache",
+      "name": [
+        "D3DSCache"
+      ],
+      "pathContains": [
+        "AppData/Local"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "Windows (Direct3D)",
+      "purpose": "Direct3D 的着色器与管线状态缓存",
+      "reason": "系统为 3D 程序预编译的缓存数据，可再生，微软排障文档也认可清理。",
+      "consequence": "3D 应用/游戏首次启动稍慢，之后自动重建；无数据损失。",
+      "ownerKind": "system",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "database-files",
+      "glob": [
+        "*.mdf",
+        "*.ldf",
+        "*.sqlite",
+        "*.sqlite3",
+        "*.mdb",
+        "*.accdb",
+        "*.dbf",
+        "*.ibd"
+      ],
+      "kind": "file",
+      "rebuildable": false,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "用户数据文件",
+      "purpose": "数据库数据文件（SQL Server/SQLite/Access/MySQL 等）",
+      "reason": "这些是某个软件或项目的真实数据仓库：账目、聊天记录、业务数据都可能躺在里面，不是缓存。",
+      "consequence": "删除等于删库，依赖它的软件会报错或数据清零，且通常无法重建。请先确认归属软件并备份。",
+      "ownerKind": "unknown",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "delivery-optimization",
+      "pathRegex": [
+        "DeliveryOptimization/Cache$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.6,
+      "revival": [
+        "autostart_service"
+      ],
+      "owner": "Windows",
+      "purpose": "传递优化缓存：给局域网其他电脑分发更新用的本地副本",
+      "reason": "内容可再生，但它由系统服务管理，手动删可能与正在进行的更新分发冲突。",
+      "consequence": "建议走「设置 → 存储 → 临时文件」或磁盘清理来清；手动删除后服务会重建目录，正在下载的更新需重来。",
+      "ownerKind": "system",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "dotnet-obj",
+      "name": [
+        "obj"
+      ],
+      "markers": [
+        "project.assets.json",
+        "Debug",
+        "Release",
+        "*.csproj.nuget.*",
+        "*.fsproj.nuget.*"
+      ],
+      "kind": "directory",
+      "requireMarkers": true,
+      "rebuildable": true,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": ".NET SDK",
+      "purpose": "C#/.NET 项目的中间编译目录（还原结果、临时编译产物）",
+      "reason": "有 project.assets.json 等特征文件，确认是 .NET 构建中间目录，内容全部由构建过程生成。",
+      "consequence": "下次构建自动重建，首次编译稍慢；不影响源码和最终发布文件。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "downloads-folder",
+      "name": [
+        "Downloads",
+        "下载"
+      ],
+      "pathRegex": [
+        "/Users/[^/]+/"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "用户个人文件夹",
+      "purpose": "浏览器与各类软件的默认下载目录",
+      "reason": "典型的「垃圾与宝贝混装」：看完的安装包、临时压缩包可以删，但下载的合同、发票、素材可能只此一份。",
+      "consequence": "整体删除会误伤重要下载文件。建议按类型/时间甄别：安装包和临时文件优先清理，文档类先打开确认或移入文档目录。",
+      "ownerKind": "system",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "driver-tools",
+      "glob": [
+        "DriverGenius*",
+        "DriveTheLife*"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.65,
+      "revival": [
+        "autostart_service",
+        "scheduled_task",
+        "run_key"
+      ],
+      "owner": "驱动精灵 / 驱动人生",
+      "purpose": "第三方驱动安装工具的程序与驱动备份目录",
+      "reason": "这类工具常捆绑推广组件，且会往系统里装驱动级服务；目录里可能还有它备份的驱动包，重装系统时偶尔用得上。",
+      "consequence": "已卸载的话先禁用其服务/计划任务再删目录；注意它安装的驱动不会随目录删除而消失，驱动问题请走设备管理器或官方渠道。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "dropbox-sync-root",
+      "name": [
+        "Dropbox"
+      ],
+      "pathRegex": [
+        "/Users/[^/]+/Dropbox$"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.85,
+      "revival": [
+        "autostart_service"
+      ],
+      "owner": "Dropbox",
+      "purpose": "Dropbox 的本地同步根目录",
+      "reason": "与 OneDrive 同理：同步目录里的删除操作会传播到云端和其他设备，这里的内容是真实文件而非缓存。",
+      "consequence": "误删会连带删除云端文件（Dropbox 有版本历史/回收站可救，但有期限）。释放空间请用选择性同步，不要直接删目录。",
+      "ownerKind": "app",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "edge-cache",
+      "name": [
+        "Cache",
+        "Code Cache",
+        "GPUCache",
+        "GrShaderCache",
+        "ShaderCache",
+        "DawnCache",
+        "DawnGraphiteCache",
+        "DawnWebGPUCache"
+      ],
+      "pathRegex": [
+        "Microsoft/Edge/User Data"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.92,
+      "revival": [
+        "process_lock"
+      ],
+      "owner": "Edge",
+      "purpose": "Edge 的网页缓存、JS 字节码缓存和 GPU 着色器缓存",
+      "reason": "和 Chrome 同源（Chromium 内核），这里全是可再生的网页临时资源，不含收藏夹、密码和登录状态。",
+      "consequence": "常逛网站首次打开稍慢，其余无影响；先关闭 Edge 再删，避免文件占用。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "edge-service-worker",
+      "pathRegex": [
+        "Microsoft/Edge/User Data/[^/]+/Service Worker/(CacheStorage|ScriptCache)$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.85,
+      "revival": [
+        "process_lock"
+      ],
+      "owner": "Edge",
+      "purpose": "Edge 中网站 Service Worker 的离线资源缓存",
+      "reason": "网站预存的离线资源副本，服务器上有原件，删除后联网访问会重新生成。",
+      "consequence": "个别网站离线功能暂时失效，联网后自动恢复；先关闭 Edge 再删。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "electron-app-cache",
+      "name": [
+        "Cache",
+        "Code Cache",
+        "GPUCache",
+        "DawnCache",
+        "ShaderCache"
+      ],
+      "pathContains": [
+        "AppData/Roaming"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.8,
+      "revival": [
+        "process_lock"
+      ],
+      "owner": "桌面应用（Chromium 内核）",
+      "purpose": "钉钉、飞书、Slack、Discord 等 Electron 应用的网页资源缓存",
+      "reason": "这类应用内嵌浏览器内核，缓存结构和 Chrome 一样，存的都是可再生的界面资源，聊天记录和账号数据不在这里。",
+      "consequence": "删掉后应用首次打开稍慢，重新拉取资源即可；请先退出对应应用，否则文件被占用删不干净。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "empty-dir",
+      "kind": "directory",
+      "empty": true,
+      "rebuildable": true,
+      "confidence": 0.5,
+      "revival": [],
+      "owner": "通用",
+      "purpose": "空目录（不含任何文件和子目录）",
+      "reason": "里面什么都没有，删掉不会丢失数据。但空目录不等于无主：软件会预留它当工作区（待写入的日志目录、挂载点），卸载残留也可能只剩一个被注册表登记的空壳。",
+      "consequence": "多数情况删了没影响，软件下次运行会自己重建。若它位于某软件目录内部、或删掉后又出现，说明有登记项在重建它——请到「复活诊断」取证，先断来源再删。",
+      "ownerKind": "unknown",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "env-secret-files",
+      "glob": [
+        ".env",
+        ".env.*"
+      ],
+      "kind": "file",
+      "rebuildable": false,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "项目配置数据",
+      "purpose": "项目环境变量文件，常含数据库密码、API 密钥",
+      "reason": ".env 里一般写着项目运行必需的密钥和连接串，通常不进版本库，删了就没有第二份。",
+      "consequence": "删除后项目跑不起来，且需要重新找齐所有密钥配置，非常折腾。请保留。",
+      "ownerKind": "dev_tool",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "finance-docs",
+      "glob": [
+        "*账单*",
+        "*发票*",
+        "*合同*",
+        "*工资*",
+        "*财务报表*"
+      ],
+      "kind": "any",
+      "rebuildable": false,
+      "confidence": 0.6,
+      "revival": [],
+      "owner": "用户重要文档",
+      "purpose": "文件名含财务/法务关键词的文档",
+      "reason": "文件名看起来是账单、发票、合同这类报销和维权要用的材料，宁可多留不可误删；当然也可能只是重名的普通文件。",
+      "consequence": "误删可能影响报销、对账或法律举证。建议打开确认内容后自行归档，清理工具不应自动处理这类文件。",
+      "ownerKind": "unknown",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "firefox-cache2",
+      "pathRegex": [
+        "Mozilla/Firefox/Profiles/[^/]+/cache2$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.92,
+      "revival": [
+        "process_lock"
+      ],
+      "owner": "Firefox",
+      "purpose": "Firefox 的网页磁盘缓存",
+      "reason": "看过的网页资源临时副本，全部可重新下载；Firefox 的书签、密码存在别处（places.sqlite 等），不在这里。",
+      "consequence": "常逛网站首次加载稍慢，其余无影响；建议先关闭 Firefox。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "firefox-crashes",
+      "name": [
+        "crashes",
+        "Crash Reports"
+      ],
+      "pathContains": [
+        "Mozilla"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.88,
+      "revival": [],
+      "owner": "Firefox",
+      "purpose": "Firefox 崩溃报告与迷你转储文件",
+      "reason": "浏览器崩溃时留下的诊断材料，普通用户用不上，也不会影响浏览器运行。",
+      "consequence": "删除无功能影响，仅丢失历史崩溃记录；正在排查崩溃问题时建议暂缓。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "firefox-startup-shader",
+      "name": [
+        "startupCache",
+        "shader-cache"
+      ],
+      "pathContains": [
+        "Mozilla/Firefox"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.88,
+      "revival": [],
+      "owner": "Firefox",
+      "purpose": "Firefox 的启动脚本缓存与 GPU 着色器缓存",
+      "reason": "为了让浏览器启动更快、网页渲染更顺而预编译的缓存，删了会自动重新编译。",
+      "consequence": "下次启动浏览器和首次打开复杂网页稍慢，之后恢复正常，不丢任何个人数据。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "generic-assistant-master",
+      "glob": [
+        "*管家*",
+        "*大师*",
+        "*助手*"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.45,
+      "revival": [
+        "run_key",
+        "scheduled_task",
+        "missing_uninstaller"
+      ],
+      "owner": "疑似捆绑推广类工具",
+      "purpose": "名称带「管家/大师/助手」的软件目录，常见于捆绑安装",
+      "reason": "这类命名是捆绑推广软件的高频特征（清理大师、装机助手等），但也可能是你主动安装的正规工具，仅凭名字不能定罪。",
+      "consequence": "请先确认是否认识这个软件：不认识的大概率是捆绑残留，按「断启动项/服务/计划任务 → 删目录」顺序处理；认识的请走官方卸载器。",
+      "ownerKind": "unknown",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "generic-crashpad",
+      "name": [
+        "Crashpad"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.82,
+      "revival": [],
+      "owner": "各类桌面应用",
+      "purpose": "Chromium 系应用通用的崩溃报告目录",
+      "reason": "应用崩溃时写的诊断报告，平时为空或只有少量旧报告，对正常使用没有价值。",
+      "consequence": "删除不影响应用功能，仅丢失崩溃历史；应用下次崩溃时会重建目录，属正常现象。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "generic-dot-cache",
+      "name": [
+        ".cache"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.6,
+      "revival": [],
+      "owner": "各类开发工具",
+      "purpose": "用户级通用缓存目录（pip、huggingface、字体工具等都可能写这里）",
+      "reason": "大多数内容是可再生缓存，但也可能躺着几个 GB 的 AI 模型文件（如 huggingface 下载），重新下载很费时间流量。",
+      "consequence": "删掉后相关工具首次运行变慢或需重新下载资源；建议先看看里面哪个子目录最大再决定。",
+      "ownerKind": "cache",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "git-dir",
+      "name": [
+        ".git"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.99,
+      "revival": [],
+      "owner": "Git",
+      "purpose": "Git 版本仓库本体：全部提交历史、分支、配置",
+      "reason": "这是整个项目的版本历史数据库，删了它，项目就变成一堆没有历史的普通文件，且无法找回未推送的提交。",
+      "consequence": "所有提交记录、分支、stash 永久丢失；如果远端没有备份，等于丢掉了项目的全部开发历史。绝对不能删。",
+      "ownerKind": "dev_tool",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "gradle-caches",
+      "markers": [
+        "modules-2",
+        "jars-9",
+        "transforms-3",
+        "build-cache-1"
+      ],
+      "pathRegex": [
+        "/\\.gradle/caches$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.9,
+      "revival": [],
+      "owner": "Gradle",
+      "purpose": "Gradle 构建工具的全局依赖与构建缓存，安卓/Java 项目常用",
+      "reason": "里面是从 Maven 仓库下载的 jar 包和构建中间产物，往往有几个 GB，全部可以重新下载或重新编译。",
+      "consequence": "删掉后下一次 Gradle 构建会重新下载依赖并全量编译，第一次明显变慢，之后恢复正常。注意别误删同级的 gradle.properties 配置。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "ime-residue",
+      "name": [
+        "SogouInput",
+        "SogouPY",
+        "QQInput",
+        "BaiduInput",
+        "iflyime"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.6,
+      "revival": [
+        "run_key",
+        "missing_uninstaller"
+      ],
+      "owner": "搜狗/QQ/百度/讯飞输入法",
+      "purpose": "输入法的程序数据目录，含用户词库与配置",
+      "reason": "输入法还挂在系统里时删目录会导致打字异常；已卸载则是残留，但启动项可能重建目录。你的多年自造词词库也在这里，删前想清楚。",
+      "consequence": "在用别删；已卸载先清启动项再删目录。词库删除后自造词、习惯排序全部丢失，云端有同步的可重新拉取。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "inetcache",
+      "name": [
+        "INetCache"
+      ],
+      "pathContains": [
+        "AppData/Local/Microsoft/Windows"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.8,
+      "revival": [
+        "process_lock"
+      ],
+      "owner": "Windows (IE/系统网络组件)",
+      "purpose": "IE 及系统网络组件遗留的网页缓存目录",
+      "reason": "IE 时代留下的网页缓存，现在主要被系统组件偶尔使用，内容都是可再生的网络资源。",
+      "consequence": "删除后相关组件重新下载资源；个别文件可能被系统占用，跳过即可。",
+      "ownerKind": "system",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "installer-package-cache",
+      "name": [
+        "Package Cache",
+        "Downloaded Installations"
+      ],
+      "pathContains": [
+        "ProgramData"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.6,
+      "revival": [
+        "missing_uninstaller"
+      ],
+      "owner": "Visual Studio / 各类安装器",
+      "purpose": "安装器缓存的原始安装包，供修复和卸载时使用",
+      "reason": "删了能省几个 GB，但很多软件（尤其 Visual Studio、VC++ 运行库）修复或卸载时要回读这里的原始包，删了可能卸不干净。",
+      "consequence": "可能导致相关软件无法修复/正常卸载，报「找不到安装源」。Visual Studio 的缓存可用官方 InstallCleanup 工具或 vs_installer 的清理选项处理，不要直接手删。",
+      "ownerKind": "system",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "ios-pods",
+      "name": [
+        "Pods"
+      ],
+      "siblings": [
+        "Podfile",
+        "*.xcodeproj",
+        "*.xcworkspace",
+        "Podfile.lock"
+      ],
+      "kind": "directory",
+      "requireSiblings": true,
+      "rebuildable": true,
+      "confidence": 0.82,
+      "revival": [],
+      "owner": "CocoaPods",
+      "purpose": "iOS 工程里 CocoaPods 安装的第三方依赖源码",
+      "reason": "同级有 Podfile / xcodeproj，确认这是 iOS 工程的依赖目录，内容由 pod install 生成。",
+      "consequence": "删掉后执行 pod install 恢复；Podfile.lock 还在就能装回完全一致的版本。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "key-cert-files",
+      "glob": [
+        "*.pem",
+        "*.key",
+        "*.p12",
+        "*.pfx",
+        "*.kdbx",
+        "*.jks",
+        "id_rsa",
+        "id_ed25519",
+        "*.keystore"
+      ],
+      "kind": "file",
+      "rebuildable": false,
+      "confidence": 0.9,
+      "revival": [],
+      "owner": "用户密钥数据",
+      "purpose": "私钥、证书、密码库文件（KeePass/Java KeyStore 等）",
+      "reason": "扩展名表明这是密钥或证书类文件：可能是服务器私钥、网站证书、密码保险库，任何一个都不可替代。",
+      "consequence": "删除可能导致服务器无法登录、HTTPS 服务中断、密码库永久锁死。无论多小都请保留。",
+      "ownerKind": "unknown",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "kingsoft-security",
+      "name": [
+        "KSafe",
+        "Kingsoft Security",
+        "liebao",
+        "LIEBAO"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.6,
+      "revival": [
+        "autostart_service",
+        "driver_protected",
+        "run_key"
+      ],
+      "owner": "金山毒霸 / 猎豹浏览器",
+      "purpose": "金山毒霸或猎豹浏览器的安装与数据目录",
+      "reason": "毒霸带自保护驱动与开机服务，猎豹常作为捆绑组件出现；卸载残留会被启动项和服务重建。注意与 WPS 的 Kingsoft 目录区分，后者含办公数据。",
+      "consequence": "在用请走官方卸载器；已卸载先断服务/启动项再删目录。误删 WPS 相关目录可能丢文档备份，删前看清路径。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "kuaiya-haozip",
+      "name": [
+        "KuaiZip",
+        "HaoZip",
+        "快压",
+        "好压"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.6,
+      "revival": [
+        "run_key",
+        "shell_namespace",
+        "scheduled_task"
+      ],
+      "owner": "快压 / 好压",
+      "purpose": "国产压缩工具的安装与数据目录",
+      "reason": "快压等以捆绑推广和弹窗著称，卸载后常留外壳右键扩展和计划任务，目录被重建；好压相对正规但也需确认是否在用。",
+      "consequence": "在用请走官方卸载器（会一并清右键菜单）；已卸载先清计划任务/启动项与外壳扩展再删目录，否则复活或右键菜单留死项。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "local-crashdumps",
+      "name": [
+        "CrashDumps"
+      ],
+      "pathContains": [
+        "AppData/Local"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "Windows 错误报告",
+      "purpose": "应用程序崩溃时生成的转储文件目录",
+      "reason": "各程序崩溃留下的「事故快照」，单个文件可能几百 MB，对普通用户没有保留价值。",
+      "consequence": "删除不影响任何程序运行，仅丢失崩溃排查材料；某个软件反复崩溃时建议先留一份分析。",
+      "ownerKind": "system",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "ludashi",
+      "name": [
+        "LuDaShi",
+        "ludashi",
+        "ComputerZ"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.65,
+      "revival": [
+        "run_key",
+        "scheduled_task",
+        "autostart_service"
+      ],
+      "owner": "鲁大师",
+      "purpose": "鲁大师（硬件检测/跑分工具）的程序或数据目录",
+      "reason": "常由装机商或驱动安装包捆绑安装，带开机启动和定时推广任务；卸载不干净时目录会被后台组件重建。",
+      "consequence": "在用别删（删了硬件监控失效）；已卸载请先清启动项和计划任务再删目录，否则复活。建议优先用官方卸载器。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "m2-repository",
+      "pathRegex": [
+        "/\\.m2/repository$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.92,
+      "revival": [],
+      "owner": "Maven",
+      "purpose": "Maven 的本地依赖仓库，存放下载过的 jar 包",
+      "reason": "全是构建时从中央仓库下载的依赖包，不含你的源码。settings.xml 配置在 .m2 根目录而不在 repository 里，删这个子目录是安全的。",
+      "consequence": "下次 mvn 构建会重新下载用到的依赖，联网环境下可完整恢复；离线环境请先确认再删。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "mail-archives",
+      "glob": [
+        "*.pst",
+        "*.ost"
+      ],
+      "kind": "file",
+      "rebuildable": false,
+      "confidence": 0.9,
+      "revival": [],
+      "owner": "Outlook",
+      "purpose": "Outlook 邮件存档/离线数据文件",
+      "reason": "多年邮件、联系人、日历可能全在这一个文件里，pst 尤其常是本地唯一存档。",
+      "consequence": "删除后邮件历史丢失；ost 理论上可从服务器重建，但 pst 往往不可再生。请保留并建议备份。",
+      "ownerKind": "app",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "memory-dmp",
+      "glob": [
+        "MEMORY.DMP"
+      ],
+      "kind": "file",
+      "rebuildable": false,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "Windows",
+      "purpose": "蓝屏时的完整内存转储，体积约等于物理内存大小",
+      "reason": "一个文件就可能占 8~32 GB，是磁盘清理的高价值目标；它只是崩溃瞬间的内存快照，系统运行不需要它。",
+      "consequence": "删除后无法再分析那次蓝屏原因，其余无任何影响；可通过磁盘清理安全删除。",
+      "ownerKind": "system",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "minidump",
+      "name": [
+        "Minidump"
+      ],
+      "pathContains": [
+        "Windows"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "Windows",
+      "purpose": "蓝屏时生成的小型内存转储文件",
+      "reason": "每次蓝屏留一份「事故快照」，供排查驱动问题用；不排查问题时就是纯占位文件。",
+      "consequence": "删除不影响系统运行，只是丢失蓝屏历史证据；最近频繁蓝屏的话建议先留着分析。",
+      "ownerKind": "system",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "mypy-cache",
+      "name": [
+        ".mypy_cache"
+      ],
+      "markers": [
+        "CACHEDIR.TAG",
+        ".gitignore"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.92,
+      "revival": [],
+      "owner": "mypy",
+      "purpose": "Python 类型检查工具 mypy 的增量分析缓存",
+      "reason": "缓存的是类型检查结果，源码和配置都不在这里，删掉只是让下次检查从头算一遍。",
+      "consequence": "下次运行 mypy 会慢一些（全量检查），之后自动重建缓存，不影响任何代码。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "netease-cache",
+      "pathRegex": [
+        "Netease/CloudMusic/(Cache|Temp)$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.8,
+      "revival": [],
+      "owner": "网易云音乐",
+      "purpose": "网易云音乐在线听歌的缓冲缓存",
+      "reason": "听歌时边播边存的临时数据，删了只是重新缓冲；你主动「下载」的歌曲在另行设置的下载目录里，不受影响。",
+      "consequence": "常听的歌曲首次播放需重新缓冲，离线听缓存歌曲暂时失效；账号、歌单、下载歌曲均不受影响。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "next-cache",
+      "pathRegex": [
+        "/\\.next/cache$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.92,
+      "revival": [],
+      "owner": "Next.js",
+      "purpose": "Next.js 框架的构建与图片优化缓存",
+      "reason": "只存 webpack/图片优化等缓存，删掉不丢页面代码，Next.js 官方也认可清理这个目录。",
+      "consequence": "下次 next dev / next build 会重新生成缓存，首次构建和图片加载稍慢。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "node-modules",
+      "name": [
+        "node_modules"
+      ],
+      "markers": [
+        ".package-lock.json",
+        ".bin"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.95,
+      "revival": [],
+      "owner": "Node.js",
+      "purpose": "前端/Node 项目下载的第三方依赖包目录",
+      "reason": "这里面的每一行代码都来自 npm 仓库，不是你自己写的。只要项目里的 package.json 还在，随时能原样装回来。",
+      "consequence": "删掉后项目暂时跑不起来，在项目目录执行 npm install（或 pnpm/yarn install）即可完整恢复，需要联网和几分钟时间。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "npm-cache",
+      "name": [
+        ".npm"
+      ],
+      "markers": [
+        "_cacache",
+        "_logs",
+        "_npx",
+        "_locks"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.88,
+      "revival": [],
+      "owner": "npm",
+      "purpose": "npm 的全局下载缓存与日志",
+      "reason": "_cacache 里是下载过的包压缩包副本，_logs 是安装日志，都能再生或无关紧要；npm 官方提供 npm cache clean 就是清这里。",
+      "consequence": "删掉后下次安装依赖会重新走网络下载，稍慢；不影响任何已装好的项目。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "nuget-packages",
+      "pathRegex": [
+        "/\\.nuget/packages$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.9,
+      "revival": [],
+      "owner": "NuGet",
+      "purpose": ".NET 的 NuGet 包全局缓存",
+      "reason": "存放从 nuget.org 下载的依赖包，供所有 .NET 项目共享，内容都能重新拉取。",
+      "consequence": "下次 dotnet restore / Visual Studio 还原包时重新下载，首次构建变慢，不影响项目源码。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "nutstore-sync-root",
+      "name": [
+        "Nutstore",
+        "我的坚果云"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.8,
+      "revival": [
+        "autostart_service"
+      ],
+      "owner": "坚果云",
+      "purpose": "坚果云的本地同步文件夹",
+      "reason": "同步盘根目录，里面的删除会同步到云端；坚果云常被用来同步工作文档和论文，价值密度高。",
+      "consequence": "误删会同步删除云端文件，虽然坚果云有回收站和历史版本，但超期后无法恢复。请保留，或在客户端里管理同步范围。",
+      "ownerKind": "app",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "nuxt-build",
+      "name": [
+        ".nuxt"
+      ],
+      "markers": [
+        "dist",
+        "components.d.ts",
+        "nuxt.json",
+        "tsconfig.json"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.88,
+      "revival": [],
+      "owner": "Nuxt",
+      "purpose": "Nuxt（Vue 框架）自动生成的构建中间目录",
+      "reason": "整个目录由 Nuxt 根据 pages/、components/ 等源码自动生成，官方文档明确说它可以随时删除重建。",
+      "consequence": "下次 nuxt dev / nuxt build 自动重建，首次启动稍慢，不丢任何源码。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "nvidia-shader-cache",
+      "pathRegex": [
+        "NVIDIA/(DXCache|GLCache)$|NVIDIA Corporation/NV_Cache$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "NVIDIA 驱动",
+      "purpose": "NVIDIA 显卡驱动的 DirectX/OpenGL 着色器缓存",
+      "reason": "驱动为加快游戏加载预编译的着色器，全部可再生；清理它也是解决某些游戏画面异常的常规手段。",
+      "consequence": "删掉后游戏首次加载稍慢、可能短暂卡顿，驱动自动重建；不影响驱动本身与游戏存档。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "onedrive-appdata",
+      "pathRegex": [
+        "AppData/Local/Microsoft/OneDrive$"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.6,
+      "revival": [
+        "run_key"
+      ],
+      "owner": "OneDrive",
+      "purpose": "OneDrive 客户端程序、更新包与运行日志",
+      "reason": "这里是客户端本体和日志，不是同步的文件；日志可清，但程序文件删了 OneDrive 会坏。",
+      "consequence": "整体删除会导致 OneDrive 无法启动、同步中断；只建议清理其中 logs 子目录，或走官方卸载/重装流程。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "onedrive-sync-root",
+      "glob": [
+        "OneDrive*"
+      ],
+      "pathRegex": [
+        "/Users/[^/]+/OneDrive"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.85,
+      "revival": [
+        "autostart_service"
+      ],
+      "owner": "OneDrive",
+      "purpose": "OneDrive 的本地同步根目录，与云端双向同步",
+      "reason": "这不是缓存！在同步目录里删文件，OneDrive 会把云端对应文件一起删掉；部分文件还是「仅联机」占位符，本地看似很小，云端却是真数据。",
+      "consequence": "误删会同步删除云端文件（云端回收站有保留期限，过期即永久丢失）。想释放空间请用 OneDrive 的「释放空间」功能把文件转为仅联机，而不是删除。",
+      "ownerKind": "app",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "page-hiber-swap",
+      "glob": [
+        "pagefile.sys",
+        "hiberfil.sys",
+        "swapfile.sys"
+      ],
+      "kind": "file",
+      "rebuildable": false,
+      "confidence": 0.99,
+      "revival": [
+        "process_lock"
+      ],
+      "owner": "Windows",
+      "purpose": "虚拟内存页面文件 / 休眠文件 / UWP 应用交换文件",
+      "reason": "都是系统正在使用的核心文件，运行时被内核锁定，直接删除会失败或导致系统异常。",
+      "consequence": "想释放 hiberfil.sys（约等于内存大小）请用管理员命令 powercfg /h off 关闭休眠；pagefile 请在系统高级设置里调整，不要手动删文件。",
+      "ownerKind": "system",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "parcel-cache",
+      "name": [
+        ".parcel-cache"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.92,
+      "revival": [],
+      "owner": "Parcel",
+      "purpose": "Parcel 打包工具的持久化缓存",
+      "reason": "纯构建缓存，Parcel 官方设计就是可随时清空，源码不在这里。",
+      "consequence": "下次构建稍慢（冷启动），之后自动重建，无任何数据损失。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "pnpm-store",
+      "name": [
+        ".pnpm-store"
+      ],
+      "markers": [
+        "v3",
+        "v10",
+        "files"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.9,
+      "revival": [],
+      "owner": "pnpm",
+      "purpose": "pnpm 包管理器的全局内容寻址仓库，所有项目共享的依赖硬链接来源",
+      "reason": "这是 pnpm 下载依赖时的本地仓库，全部内容都能从 npm 仓库重新拉取，不含任何个人创作。",
+      "consequence": "删掉后已有项目的 node_modules 硬链接可能失效，下次 pnpm install 会重新下载依赖，耗时取决于网速。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "prefetch",
+      "name": [
+        "Prefetch"
+      ],
+      "pathRegex": [
+        "Windows/Prefetch$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.7,
+      "revival": [
+        "autostart_service"
+      ],
+      "owner": "Windows",
+      "purpose": "Windows 预读取数据，用来加快程序启动",
+      "reason": "系统记录的程序启动轨迹，删了会自动重建。流传的「清 Prefetch 提速」其实是误区，清理它主要是为了排除故障或省一点点空间。",
+      "consequence": "删掉后几天内常用程序启动略慢，系统重新学习后恢复；需要管理员权限，且位于系统盘受保护区域。",
+      "ownerKind": "system",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "project-source-files",
+      "glob": [
+        "*.psd",
+        "*.prproj",
+        "*.aep",
+        "*.blend",
+        "*.unity",
+        "*.uproject",
+        "*.sln"
+      ],
+      "kind": "file",
+      "rebuildable": false,
+      "confidence": 0.75,
+      "revival": [],
+      "owner": "用户创作工程",
+      "purpose": "设计/剪辑/3D/游戏/代码工程的源文件",
+      "reason": "扩展名表明这是创作工程的「源稿」：PSD 分层稿、剪辑工程、3D 场景等，导出成品可以再生，源稿丢了就没了。",
+      "consequence": "删除后无法再修改对应作品，只能对着成品重做。请保留；大体积素材缓存应另行甄别。",
+      "ownerKind": "unknown",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "pycache",
+      "name": [
+        "__pycache__"
+      ],
+      "markers": [
+        "*.pyc"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.97,
+      "revival": [],
+      "owner": "Python",
+      "purpose": "Python 解释器自动生成的字节码缓存，用来加快模块导入",
+      "reason": "里面全是 .pyc 编译缓存，由旁边的 .py 源码自动生成，删掉不损失任何源代码。",
+      "consequence": "下次运行 Python 程序时会自动重新生成，首次导入模块稍微慢一点点，用户基本无感。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "pypackages",
+      "name": [
+        "__pypackages__"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "Python (PEP 582)",
+      "purpose": "PEP 582 提案的本地依赖目录（pdm 等工具使用）",
+      "reason": "和 node_modules 类似，是项目本地安装的第三方依赖，可由依赖清单重新安装。",
+      "consequence": "删掉后用 pdm install 等命令重新安装依赖即可，不影响源码。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "pytest-cache",
+      "name": [
+        ".pytest_cache"
+      ],
+      "markers": [
+        "CACHEDIR.TAG",
+        "v"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.92,
+      "revival": [],
+      "owner": "pytest",
+      "purpose": "pytest 测试框架的缓存，记录上次失败的用例等信息",
+      "reason": "只存测试运行的临时状态（比如「上次哪些用例失败了」），不是测试代码本身。",
+      "consequence": "删掉后 pytest 的 --lf（只跑上次失败用例）等便利功能暂时失效，跑一次测试就会重建。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "python-venv",
+      "name": [
+        ".venv",
+        "venv"
+      ],
+      "markers": [
+        "pyvenv.cfg",
+        "Scripts",
+        "Lib",
+        "bin"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "Python",
+      "purpose": "Python 虚拟环境，隔离安装的解释器副本和依赖包",
+      "reason": "虚拟环境里是 Python 解释器副本和 pip 装的依赖，不是你的代码；有 pyvenv.cfg 等特征可以确认。",
+      "consequence": "删掉后需要重新创建虚拟环境并安装依赖（python -m venv .venv 后 pip install -r requirements.txt）；如果依赖清单没保存，恢复会麻烦，删前确认有 requirements.txt 或 pyproject.toml。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "qq-filerecv",
+      "name": [
+        "FileRecv"
+      ],
+      "pathRegex": [
+        "Tencent Files|QQ"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "QQ",
+      "purpose": "QQ 接收文件的默认保存目录",
+      "reason": "别人通过 QQ 传给你的文件都落在这里，属于个人数据而非缓存，可能混着安装包和重要文档。",
+      "consequence": "删除后文件无法从 QQ 服务器找回（离线文件有保存期限）；建议逐个甄别，把文档资料移走后再清理安装包。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "qq-pc-mgr",
+      "name": [
+        "QQPCMgr",
+        "TencentQQPCMgr"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.65,
+      "revival": [
+        "autostart_service",
+        "driver_protected",
+        "run_key"
+      ],
+      "owner": "腾讯电脑管家",
+      "purpose": "腾讯电脑管家的程序与数据目录",
+      "reason": "安全类软件带自保护驱动和多个后台服务，手动删目录会被拦截或被服务重建；卸载不彻底时残留明显。",
+      "consequence": "在用别手删；已卸载请先确认服务已移除再清目录，否则可能删一半失败留下损坏状态。推荐官方卸载器。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "recycle-svi",
+      "name": [
+        "$Recycle.Bin",
+        "System Volume Information"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.99,
+      "revival": [
+        "driver_protected"
+      ],
+      "owner": "Windows",
+      "purpose": "回收站本体 / 系统还原点与卷影副本存储区",
+      "reason": "回收站里可能还有你等着还原的文件；System Volume Information 存着系统还原点，是系统出问题时救命用的，且受权限保护。",
+      "consequence": "直接删回收站目录等于清空所有可还原文件且绕过确认；删还原点存储会失去系统回退能力并可能报错。清空回收站请用右键「清空回收站」，还原点请用系统保护设置管理。",
+      "ownerKind": "system",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "rust-maven-target",
+      "name": [
+        "target"
+      ],
+      "markers": [
+        "CACHEDIR.TAG",
+        ".rustc_info.json",
+        "debug",
+        "release",
+        "classes",
+        "maven-status",
+        "generated-sources",
+        "surefire-reports"
+      ],
+      "kind": "directory",
+      "requireMarkers": true,
+      "rebuildable": true,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "Rust / Maven",
+      "purpose": "Rust（cargo）或 Java（Maven）项目的编译输出目录",
+      "reason": "目录里有 debug/release 或 classes 等编译产物特征，说明这是构建输出，不是源码。源码在旁边的 src 里。",
+      "consequence": "删掉后 cargo build / mvn package 会全量重新编译，Rust 大项目可能要几分钟到几十分钟，产物可完整再生。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "shell-extension-residue",
+      "name": [
+        "shell",
+        "shellfolder",
+        "shellex",
+        "namespace",
+        "shelliconoverlayidentifiers",
+        "contextmenuhandlers"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.5,
+      "revival": [
+        "shell_namespace"
+      ],
+      "owner": "疑似外壳扩展残留",
+      "purpose": "名称与 Windows 外壳扩展登记点一致的目录（右键菜单、「此电脑」里的虚拟文件夹）",
+      "reason": "这类名字是外壳扩展的登记点。资源管理器里看不到实体、却反复出现的目录，多半是注册表 NameSpace/CLSID 指向这里；但仅凭名字不能定罪，项目里也可能有普通的 shell 目录。",
+      "consequence": "只删目录不够：注册表登记还在，残留组件会把它重建。请到「复活诊断」生成只读脚本取证，确认 CLSID 归属后先注销登记再删目录。",
+      "ownerKind": "unknown",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "source-repo-root",
+      "markers": [
+        ".git"
+      ],
+      "kind": "directory",
+      "requireMarkers": true,
+      "rebuildable": false,
+      "confidence": 0.95,
+      "revival": [],
+      "owner": "源码仓库",
+      "purpose": "包含 .git 的目录是一个完整的代码仓库根目录",
+      "reason": "内部发现 .git，说明这是有人在做版本管理的源码项目，里面是劳动成果而不是缓存。",
+      "consequence": "删除会丢失源码与全部版本历史；即使代码已推送远端，本地未提交的改动也会消失。请整体保留。",
+      "ownerKind": "dev_tool",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "spotify-storage",
+      "pathRegex": [
+        "Spotify/(Storage|Browser)$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.6,
+      "revival": [],
+      "owner": "Spotify",
+      "purpose": "Spotify 的流媒体缓存与离线歌曲存储",
+      "reason": "里面混着可再生缓存和你主动下载的离线歌曲；全删能省不少空间，但离线内容要重新下载。",
+      "consequence": "离线歌曲需重新下载才能离线播放，缓存部分自动重建；更稳妥的做法是在 Spotify 设置里清除缓存或调整离线下载。",
+      "ownerKind": "cache",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "ssh-gnupg-dir",
+      "name": [
+        ".ssh",
+        ".gnupg"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.97,
+      "revival": [],
+      "owner": "用户密钥数据",
+      "purpose": "SSH 私钥 / GPG 密钥与信任数据库",
+      "reason": "这里是你登录服务器、签名代码、解密文件的身份凭证，体积极小但价值极高，丢了基本无法补办。",
+      "consequence": "删除后无法再登录依赖该密钥的服务器/Git 仓库，加密数据可能永久打不开。绝对保留，并建议另行备份。",
+      "ownerKind": "unknown",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "steam-shadercache",
+      "pathRegex": [
+        "steamapps/shadercache$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.88,
+      "revival": [],
+      "owner": "Steam",
+      "purpose": "Steam 游戏的预编译着色器缓存",
+      "reason": "为了减少游戏卡顿预编译的 GPU 着色器，按游戏 AppID 分目录，删了 Steam 会重新下载或编译。",
+      "consequence": "删掉后对应游戏首次启动可能短暂卡顿（重新编译着色器），之后恢复；游戏本体和存档不受影响。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "thumb-icon-cache",
+      "glob": [
+        "thumbcache_*.db",
+        "iconcache*.db"
+      ],
+      "kind": "file",
+      "rebuildable": true,
+      "confidence": 0.85,
+      "revival": [
+        "process_lock"
+      ],
+      "owner": "Windows 资源管理器",
+      "purpose": "文件夹缩略图与图标缓存数据库",
+      "reason": "资源管理器把图片/视频预览图存在这里加快浏览，删了会重新生成，也是修复「缩略图显示错乱」的常规手段。",
+      "consequence": "删掉后首次浏览图片文件夹会重新生成预览、稍慢；资源管理器运行时文件被占用，需先结束 explorer 或重启后再删。",
+      "ownerKind": "system",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "thunder-download-dir",
+      "name": [
+        "ThunderDownload",
+        "迅雷下载",
+        "TDDOWNLOAD"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.75,
+      "revival": [],
+      "owner": "迅雷",
+      "purpose": "迅雷的默认下载保存目录",
+      "reason": "下载回来的电影、安装包、压缩包都在这，体积大但属于个人数据；其中未下完的临时文件才是可清理部分。",
+      "consequence": "删除后已下载内容丢失，重新下载耗时且部分资源可能失效；建议按文件类型甄别，优先清理 .xltd 等未完成任务残留。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "thunder-residue",
+      "name": [
+        "Thunder Network",
+        "Thunder",
+        "XLLiveUD"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.6,
+      "revival": [
+        "autostart_service",
+        "scheduled_task",
+        "run_key",
+        "missing_uninstaller"
+      ],
+      "owner": "迅雷",
+      "purpose": "迅雷客户端组件、升级模块与缓存目录",
+      "reason": "迅雷以「卸载后残留多、后台组件自启」著称；XLLiveUD 之类升级模块常靠计划任务和服务维持，删文件夹治标不治本。",
+      "consequence": "未卸载时删除会损坏客户端；已卸载请先在任务计划程序和服务里禁用迅雷相关条目，再删目录，否则会被后台组件重建。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "tox-envs",
+      "name": [
+        ".tox"
+      ],
+      "markers": [
+        "log",
+        "dist",
+        "py*"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.88,
+      "revival": [],
+      "owner": "tox",
+      "purpose": "tox 自动化测试工具创建的多个虚拟环境",
+      "reason": "里面是 tox 为跑测试临时建的一套套虚拟环境，全部可以重建。",
+      "consequence": "下次运行 tox 会重新建环境并装依赖，耗时几分钟，不影响源码。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "turbo-cache",
+      "name": [
+        ".turbo"
+      ],
+      "markers": [
+        "turbo-cache.jsonl",
+        "daemon"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.88,
+      "revival": [],
+      "owner": "Turborepo",
+      "purpose": "Turborepo  monorepo 构建工具的本地任务缓存",
+      "reason": "缓存的是构建任务输出，用来跳过重复构建，删掉只是失去加速效果。",
+      "consequence": "下次 turbo 构建会全量执行任务，变慢一些，之后缓存自动重建。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "user-shell-folders",
+      "name": [
+        "Documents",
+        "Desktop",
+        "Pictures",
+        "Videos",
+        "Music",
+        "Favorites",
+        "Contacts",
+        "Links",
+        "Saved Games",
+        "Searches"
+      ],
+      "pathRegex": [
+        "/Users/[^/]+/[^/]+$"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.95,
+      "revival": [],
+      "owner": "用户个人文件夹",
+      "purpose": "Windows 用户库文件夹：文档、桌面、图片、视频、音乐、游戏存档等",
+      "reason": "这是系统为你保管个人资料的「主仓库」，里面是你的文档、照片、存档，不是任何软件的缓存。",
+      "consequence": "删除等于直接丢个人资料，且很多软件（截图工具、游戏、办公软件）默认往这里写文件，删了还会出各种异常。请整体保留，清理应深入到具体文件逐个判断。",
+      "ownerKind": "system",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "user-temp",
+      "name": [
+        "Temp",
+        "tmp"
+      ],
+      "pathRegex": [
+        "AppData/Local/Temp$|Windows/Temp$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.8,
+      "revival": [
+        "process_lock"
+      ],
+      "owner": "Windows / 各类应用",
+      "purpose": "系统和应用程序的临时文件堆放处",
+      "reason": "程序解压安装包、导出中间文件都用这里，绝大多数是用完即弃的垃圾，常年累积可达数 GB。",
+      "consequence": "正在被占用的文件删不掉，跳过即可；极个别安装器把卸载/回滚数据放在 Temp，刚装完重要软件时建议缓一两天再清。",
+      "ownerKind": "system",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "vm-disk-files",
+      "glob": [
+        "*.vmdk",
+        "*.vhd",
+        "*.vhdx",
+        "*.qcow2",
+        "*.vdi"
+      ],
+      "kind": "file",
+      "rebuildable": false,
+      "confidence": 0.9,
+      "revival": [],
+      "owner": "虚拟机软件",
+      "purpose": "虚拟机磁盘镜像，里面是一整台虚拟电脑",
+      "reason": "一个文件就是一套完整系统加数据，体积大但属于高价值资产，不是缓存。",
+      "consequence": "删除后虚拟机及其中的所有数据、环境配置全部消失，重建成本极高。确认不再需要前请保留。",
+      "ownerKind": "app",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "vs-workspace-state",
+      "name": [
+        ".vs"
+      ],
+      "markers": [
+        "v15",
+        "v16",
+        "v17",
+        "config"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.8,
+      "revival": [],
+      "owner": "Visual Studio",
+      "purpose": "Visual Studio 的解决方案级本地状态（窗口布局、IntelliSense 数据库等）",
+      "reason": "存的是 IDE 个人工作状态和索引数据库，不是代码；VS 关闭后删除是社区常见排障手段。",
+      "consequence": "删掉后重新打开解决方案会重建索引，窗口布局、打开的文件列表等回到默认；请先关闭 Visual Studio 再删。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "vscode-cacheddata",
+      "name": [
+        "CachedData"
+      ],
+      "pathRegex": [
+        "(Code|Cursor|VSCodium)/CachedData$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.92,
+      "revival": [],
+      "owner": "VS Code",
+      "purpose": "VS Code 按版本缓存的 JS 字节码，加快编辑器启动",
+      "reason": "每个版本一个子目录，旧版本的缓存纯属遗留；你的代码、设置、扩展都不在这里。",
+      "consequence": "删掉后下次启动 VS Code 稍慢（重新生成），无任何数据损失；扩展更新后旧缓存也会自然失效。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "vscode-logs",
+      "name": [
+        "logs"
+      ],
+      "pathRegex": [
+        "(Code|Cursor|VSCodium)/logs$"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.92,
+      "revival": [],
+      "owner": "VS Code",
+      "purpose": "VS Code 各窗口与扩展进程的运行日志",
+      "reason": "按会话时间戳堆积的日志文件，只用于排障，长期累积可达数百 MB。",
+      "consequence": "删除不影响编辑器任何功能；正在排查扩展报错时可先保留最近几天的日志。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "web-dist",
+      "name": [
+        "dist"
+      ],
+      "siblings": [
+        "package.json",
+        "vite.config.*",
+        "webpack.config.*",
+        "rollup.config.*",
+        "tsconfig.json",
+        "Cargo.toml",
+        "pom.xml",
+        "build.gradle",
+        "pyproject.toml",
+        "setup.py"
+      ],
+      "pathRegex": [
+        "^(?!.*node_modules/)"
+      ],
+      "kind": "directory",
+      "requireSiblings": true,
+      "rebuildable": true,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "前端/构建工具",
+      "purpose": "项目打包输出目录（压缩后的 js/css/html 等发布产物）",
+      "reason": "同级存在 package.json 等项目配置，说明这是源码项目的打包产物，跑一次 build 命令就能重新生成。",
+      "consequence": "删掉后需要重新执行 npm run build 等命令才能部署；如果这是你唯一一份发布包且源码已丢失，请先确认源码还在。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "wechat-cache",
+      "pathRegex": [
+        "(WeChat Files|xwechat_files)/[^/]+/(FileStorage/)?(Cache|Temp)$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.8,
+      "revival": [
+        "process_lock"
+      ],
+      "owner": "微信",
+      "purpose": "微信电脑版聊天图片/视频的临时缓存与缩略图",
+      "reason": "这是刷聊天时产生的临时副本，真正的聊天记录数据库和已接收文件在别的目录；缓存删了微信会按需重建。",
+      "consequence": "部分聊天图片再次查看时需重新加载（很久以前的图片若服务器已过期可能无法再拉取，重要图片请先另存）；建议先退出微信。",
+      "ownerKind": "cache",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "wechat-received-files",
+      "pathRegex": [
+        "(WeChat Files|xwechat_files)/[^/]+/FileStorage/(File|Image|Video|MsgAttach)$"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "微信",
+      "purpose": "微信聊天中接收/发送的文件、图片、视频原件",
+      "reason": "这里不是缓存，是别人发给你的合同、照片、工作文件的本地原件，很多只有这一份，微信服务器过期后就拉不回来了。",
+      "consequence": "删除后聊天记录里对应文件显示「已过期或已被清理」，无法恢复。请先把有价值的文件另存到文档目录，再考虑清理。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "windows-old",
+      "name": [
+        "Windows.old"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.85,
+      "revival": [],
+      "owner": "Windows",
+      "purpose": "升级或重装 Windows 时自动备份的旧系统完整副本",
+      "reason": "通常有十几 GB，是清理大户。但它是你回退到旧系统的唯一通道，旧系统的桌面和文档里也可能还有没搬走的个人文件。",
+      "consequence": "删掉后无法回退到旧版本 Windows，旧系统里的个人文件一并消失。确认新系统稳定、翻过旧桌面/文档后，建议用系统自带「磁盘清理」删除，比手动删更干净。",
+      "ownerKind": "system",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "windows-upgrade-temp",
+      "name": [
+        "$WINDOWS.~BT",
+        "$WINDOWS.~WS"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.75,
+      "revival": [
+        "autostart_service"
+      ],
+      "owner": "Windows",
+      "purpose": "Windows 更新/升级过程中的临时安装文件",
+      "reason": "升级助手下载和解压的安装材料，升级完成后就是遗留垃圾；但如果更新正在进行中，删了会导致更新失败。",
+      "consequence": "确认近期没有正在进行的系统更新后可删，更新失败时系统会重新下载；推荐通过「磁盘清理」里的 Windows 更新清理来处理。",
+      "ownerKind": "system",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "windowsapps",
+      "name": [
+        "WindowsApps"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.9,
+      "revival": [
+        "driver_protected"
+      ],
+      "owner": "Windows",
+      "purpose": "Microsoft Store 应用（UWP）的安装目录",
+      "reason": "里面是已安装商店应用的程序本体，不是缓存；目录受特殊权限保护，强删会留下损坏的应用注册信息。",
+      "consequence": "删除会导致商店应用无法启动且难以修复；卸载应用请走「设置 → 应用」或开始菜单右键卸载。",
+      "ownerKind": "system",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "winsxs",
+      "name": [
+        "WinSxS"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.99,
+      "revival": [
+        "driver_protected"
+      ],
+      "owner": "Windows",
+      "purpose": "Windows 组件存储，系统文件的「真身」仓库",
+      "reason": "看起来巨大，但里面大量文件是与系统目录共享的硬链接，实际占用远小于显示值；手动删除会直接损坏系统。",
+      "consequence": "手动删除可能导致更新失败、功能损坏甚至无法开机。想瘦身请用管理员命令 Dism /Online /Cleanup-Image /StartComponentCleanup。",
+      "ownerKind": "system",
+      "verdict": "keep_locked"
+    },
+    {
+      "id": "wps-office6",
+      "pathRegex": [
+        "kingsoft/office6"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.6,
+      "revival": [],
+      "owner": "WPS Office",
+      "purpose": "WPS 的配置、模板与文档备份中心数据",
+      "reason": "这里不是缓存：WPS 的「备份中心」把未保存/异常关闭文档的自动备份存在这一带，误删可能丢掉救命备份。",
+      "consequence": "整体删除会丢配置、自定义模板和文档自动备份；想清空间请在 WPS 备份中心里按时间清理旧备份，保留近期文件。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    },
+    {
+      "id": "wu-download",
+      "pathRegex": [
+        "SoftwareDistribution/Download$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.8,
+      "revival": [
+        "autostart_service"
+      ],
+      "owner": "Windows Update",
+      "purpose": "Windows 更新已下载安装包的存放目录",
+      "reason": "更新装完后这些安装包就没用了，是微软官方排障文档里认可可清理的目录，常占数 GB。",
+      "consequence": "删掉后若还有未完成的更新会重新下载；规范做法是先停止 Windows Update 服务再清，清完服务会自动重建目录，属正常现象。",
+      "ownerKind": "system",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "xcode-deriveddata",
+      "name": [
+        "DerivedData"
+      ],
+      "pathContains": [
+        "Library/Developer/Xcode"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.92,
+      "revival": [],
+      "owner": "Xcode",
+      "purpose": "Xcode 的编译产物、索引和日志目录",
+      "reason": "全是编译中间产物和代码索引，iOS 开发者经常靠清理它来解决构建怪问题，官方认可可删。",
+      "consequence": "删掉后 Xcode 重新编译和建索引，大项目首次明显变慢；不丢源码，但会丢失断点等少量工作区状态。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "yarn-cache",
+      "pathRegex": [
+        "/\\.yarn/(berry/)?cache$"
+      ],
+      "kind": "directory",
+      "rebuildable": true,
+      "confidence": 0.88,
+      "revival": [],
+      "owner": "Yarn",
+      "purpose": "Yarn 的离线依赖缓存（zip 包镜像）",
+      "reason": "存放下载过的依赖 zip 包，用于离线安装加速，内容可从 registry 重新获取。",
+      "consequence": "删掉后 yarn install 需重新下载依赖；若项目依赖「零安装」离线模式，请先确认网络可用。",
+      "ownerKind": "dev_tool",
+      "verdict": "safe_delete"
+    },
+    {
+      "id": "yuanqi-desktop",
+      "name": [
+        "元气桌面",
+        "元气壁纸"
+      ],
+      "kind": "directory",
+      "rebuildable": false,
+      "confidence": 0.6,
+      "revival": [
+        "run_key",
+        "scheduled_task"
+      ],
+      "owner": "元气桌面（猎豹系）",
+      "purpose": "动态壁纸软件的程序与壁纸缓存目录",
+      "reason": "常随其他软件捆绑进场，壁纸缓存能占几个 GB，带开机启动和定时任务；卸载不干净时目录会重建。",
+      "consequence": "在用别删（壁纸失效）；已卸载先清启动项与计划任务再删目录。下载的壁纸若有收藏价值请先另存。",
+      "ownerKind": "app",
+      "verdict": "needs_review"
+    }
+  ]
+}

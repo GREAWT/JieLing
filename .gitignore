@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+.DS_Store
+*.tsbuildinfo
+.qoder-sites/
+.qoder-sites.json
+# 本地站点绑定（含发布快照），各开发者自行 prepare 生成
+*.qoder.site
+# 构建时从 skill/ 与 src/knowledge/ 复制出的 Skill 产物，真源不在这里
+public/skill/
