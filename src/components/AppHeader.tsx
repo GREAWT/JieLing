@@ -78,7 +78,7 @@ export function AppHeader({
             <span className="dc-display block truncate text-base font-semibold tracking-wide sm:text-lg">
               {PRODUCT_NAME}
             </span>
-            <span className="hidden truncate text-[11px] text-muted-foreground sm:block">
+            <span className="hidden truncate text-xs text-muted-foreground sm:block">
               {PRODUCT_TAGLINE}
             </span>
           </span>

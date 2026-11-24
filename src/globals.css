@@ -32,7 +32,7 @@
   --site-accent: #0e7490;
   --site-on-accent: #ffffff;
   --site-surface: #ffffff;
-  --site-muted: #52657f;
+  --site-muted: #44566e;
   --site-border: #ccd7e6;
   --site-font: "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Noto Sans CJK SC", system-ui, sans-serif;
   --site-radius: 12px;
@@ -77,7 +77,7 @@
   --site-accent: #22d3ee;
   --site-on-accent: #04121b;
   --site-surface: #0b1220;
-  --site-muted: #93a4bd;
+  --site-muted: #a6b6cd;
   --site-border: #1c2942;
   --site-font: "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Noto Sans CJK SC", system-ui, sans-serif;
 
@@ -206,9 +206,13 @@
   --font-display: var(--font-display);
   --font-mono: var(--font-mono);
   --spacing: calc(0.25rem * var(--site-space));
-  --text-xs: calc(.75rem * var(--site-type));
-  --text-sm: calc(.875rem * var(--site-type));
+  /* 投屏可读性：正文与辅助文字整体上调一档，并给足行高（13/20、15/24） */
+  --text-xs: calc(.8125rem * var(--site-type));
+  --text-xs--line-height: calc(1.25rem * var(--site-type));
+  --text-sm: calc(.9375rem * var(--site-type));
+  --text-sm--line-height: calc(1.5rem * var(--site-type));
   --text-base: calc(1rem * var(--site-type));
+  --text-base--line-height: calc(1.625rem * var(--site-type));
   --text-lg: calc(1.125rem * var(--site-type));
   --text-xl: calc(1.25rem * var(--site-type));
   --text-2xl: calc(1.5rem * var(--site-type));

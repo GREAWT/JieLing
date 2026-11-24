@@ -20,6 +20,8 @@ export interface ConfirmQuarantineDialogProps {
   entries: JudgedEntry[];
   onConfirm: () => void;
   busy?: boolean;
+  /** 隔离进行中的真实进度文案，如「隔离中 2/5」 */
+  busyLabel?: string | null;
 }
 
 export function ConfirmQuarantineDialog({
@@ -28,6 +30,7 @@ export function ConfirmQuarantineDialog({
   entries,
   onConfirm,
   busy = false,
+  busyLabel = null,
 }: ConfirmQuarantineDialogProps) {
   const totalBytes = entries.reduce((total, entry) => total + entry.size, 0);
   const revivalCount = entries.filter((entry) => entry.hit && entry.hit.revival.length > 0).length;
@@ -79,6 +82,11 @@ export function ConfirmQuarantineDialog({
           <Undo2 aria-hidden className="dc-tone-safe dc-tone-text mt-0.5 size-3.5 shrink-0" />
           隔离区独立于回收站，不占用回收站空间；到期后仍需你确认才会彻底删除。
         </p>
+        <p className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
+          <ShieldCheck aria-hidden className="dc-tone-info dc-tone-text mt-0.5 size-3.5 shrink-0" />
+          沙箱会在开始前预检剩余空间，不足时禁止开始；真实磁盘浏览器读不到剩余空间，
+          因此一律先复制并校验、再移除原文件，空间不足或校验失败时原文件保留并报告原因。
+        </p>
 
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
@@ -86,7 +94,7 @@ export function ConfirmQuarantineDialog({
           </Button>
           <Button onClick={onConfirm} disabled={busy || entries.length === 0}>
             {busy ? <Spinner /> : <ShieldCheck aria-hidden />}
-            确认移入隔离区
+            {busy ? (busyLabel ?? "隔离中…") : "确认移入隔离区"}
           </Button>
         </DialogFooter>
       </DialogContent>

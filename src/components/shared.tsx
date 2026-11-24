@@ -116,7 +116,7 @@ export function VerdictBadge({
       className={cn(
         VERDICT_TONE[verdict],
         "dc-tone-bg dc-tone-text dc-tone-border inline-flex shrink-0 items-center gap-1 rounded-full border font-medium",
-        compact ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-0.5 text-xs",
+        compact ? "px-1.5 py-0.5 text-xs" : "px-2 py-0.5 text-xs",
         className,
       )}
     >

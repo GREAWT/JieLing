@@ -35,8 +35,9 @@
 }
 .dc-label {
   font-family: var(--font-mono);
-  font-size: calc(0.6875rem * var(--site-type, 1));
-  letter-spacing: 0.14em;
+  font-size: calc(0.75rem * var(--site-type, 1));
+  line-height: 1.5;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--site-muted);
 }
@@ -47,7 +48,8 @@
 }
 .dc-path {
   font-family: var(--font-mono);
-  font-size: calc(0.75rem * var(--site-type, 1));
+  font-size: calc(0.8125rem * var(--site-type, 1));
+  line-height: 1.55;
   direction: ltr;
   unicode-bidi: plaintext;
 }

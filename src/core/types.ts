@@ -68,6 +68,17 @@ export interface OwnerGroup {
   hasAiJudgment: boolean;
 }
 
+/** 操作清单状态：处理中 / 已隔离 / 隔离失败 / 已还原 / 还原失败 */
+export type QuarantineStatus =
+  | "processing"
+  | "quarantined"
+  | "quarantine_failed"
+  | "restored"
+  | "restore_failed";
+
+/** 还原遇到同名内容时的处理策略 */
+export type RestorePolicy = "skip" | "keep-both" | "replace";
+
 export interface QuarantineRecord {
   id: string;
   originalPath: string;
@@ -79,6 +90,32 @@ export interface QuarantineRecord {
   owner: string;
   reason: string;
   restored: boolean;
+  /** 原内容最后修改时间（扫描时采集），0 表示未知 */
+  modifiedAt: number;
+  /** 校验值：文件为内容哈希，目录为结构哈希 */
+  checksum: string;
+  checksumAlgo: "sha256" | "sha256-sample" | "tree-sha256" | "none";
+  status: QuarantineStatus;
+  /** 最近一次状态变更时间 */
+  updatedAt: number;
+  /** 失败原因 / 降级说明等附加信息 */
+  note?: string;
+}
+
+export interface QuarantineFailure {
+  path: string;
+  reason: string;
+}
+
+export interface QuarantineOutcome {
+  created: QuarantineRecord[];
+  skipped: QuarantineFailure[];
+  failures: QuarantineFailure[];
+}
+
+export interface RestoreOutcome {
+  restored: QuarantineRecord[];
+  failures: QuarantineFailure[];
 }
 
 export type ScanPhase = "idle" | "scanning" | "judging" | "ready" | "error";

@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-  Archive, BookOpen, FileDown, FolderSearch, ListChecks, RefreshCw,
+  Archive, BookOpen, ChevronDown, FileDown, FolderSearch, ListChecks, RefreshCw,
   ShieldCheck, Sparkles, Stethoscope, TriangleAlert,
 } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -19,20 +21,21 @@ import {
 import {
   AppHeader, ScanStatusBar, ReviewBoard, SelectionSummaryBar, QuarantineView,
   DiagnosePanel, LandingHero, EmptyState, ErrorState, ConfirmQuarantineDialog,
-  EntryDrawer, formatBytes,
+  RestoreConflictDialog, EntryDrawer, formatBytes,
 } from "@/src/components";
 import { Panel, ToneDot } from "@/src/components/shared";
 import type {
   CleanupAction, DiagnosisReport, JudgedEntry, KnowledgeHit, OwnerGroup,
-  QuarantineRecord, RevivalMechanism, ScanEntry, ScanPhase, ScanProgress, ScanSource,
+  QuarantineRecord, RestorePolicy, RevivalMechanism, ScanEntry, ScanPhase, ScanProgress, ScanSource,
 } from "@/src/core/types";
 import {
-  DEFAULT_SCAN_OPTIONS, PRODUCT_NAME, PRODUCT_PHILOSOPHY, QUARANTINE_TTL_DAYS, REVIVAL_LABEL,
+  AI_SAFE_CONFIDENCE, DEFAULT_SCAN_OPTIONS, PRODUCT_NAME, PRODUCT_PHILOSOPHY,
+  QUARANTINE_TTL_DAYS, REVIVAL_LABEL,
 } from "@/src/core/constants";
 import {
   createScanner, errorMessage, isFileSystemAccessSupported, openLocalRoot, openSandboxRoot,
-  listQuarantine, purgeExpired, quarantineEntries, restoreEntries, emptyQuarantine,
-  deleteQuarantined,
+  listQuarantine, purgeExpired, quarantineEntries, restoreEntries, restoreConflicts,
+  emptyQuarantine, deleteQuarantined,
   SANDBOX_LABEL, generateSandbox, clearSandbox, sandboxReady, type Scanner,
   appendOpsManual, syncFolderDictionary, readJournal, itemsFromEntries, itemsFromRecords,
   journalError, OPS_MANUAL_NAME, FOLDER_DICTIONARY_NAME, type OpsEvent,
@@ -123,6 +126,13 @@ export default function App() {
   const [sandboxProgress, setSandboxProgress] = useState<{ created: number; total: number } | null>(null);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiNotice, setAiNotice] = useState<string | null>(null);
+  // 「仅使用本地规则」：不向云端发送任何目录特征
+  const [localOnly, setLocalOnly] = useState(() => localStorage.getItem("dareclean.localOnly") === "1");
+  const localOnlyRef = useRef(localOnly);
+  const [quarantineProgress, setQuarantineProgress] = useState<{ done: number; total: number } | null>(null);
+  const [restoreConflict, setRestoreConflict] = useState<QuarantineRecord | null>(null);
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const [purgeOpen, setPurgeOpen] = useState(false);
 
   // 抽屉：详情只有一处，列表里点开，←/→ 在当前可见条目间移动
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -160,6 +170,11 @@ export default function App() {
     const saved = localStorage.getItem("dareclean.rootAbsPath");
     if (saved) setRootAbsPath(saved);
   }, []);
+
+  useEffect(() => {
+    localOnlyRef.current = localOnly;
+    localStorage.setItem("dareclean.localOnly", localOnly ? "1" : "0");
+  }, [localOnly]);
 
   // 底部选择条的高度是动态的：写进内边距，最后一行永远不会被挡住
   const measureDock = useCallback(() => {
@@ -241,18 +256,27 @@ export default function App() {
       const response = await judgeDirectories(items);
       const nextHits = new Map(hitsRef.current);
       const nextAiIds = new Set(aiIdsRef.current);
+      let downgraded = 0;
       for (const judgment of response.judgments) {
         const entry = keyToEntry.get(judgment.key);
         if (!entry) continue;
+        // 低置信度的「推荐隔离」一律降档：AI 说了不算，够确信才敢推荐
+        let verdict = judgment.verdict;
+        let reason = judgment.reason;
+        if (verdict === "safe_delete" && judgment.confidence < AI_SAFE_CONFIDENCE) {
+          verdict = "needs_review";
+          reason = `${reason}（置信度 ${Math.round(judgment.confidence * 100)}% 不足，已降为需要确认）`;
+          downgraded += 1;
+        }
         nextHits.set(entry.id, {
           fingerprintId: judgment.fingerprint ?? `ai:${judgment.key}`,
           owner: judgment.owner,
           ownerKind: judgment.ownerKind,
           purpose: judgment.purpose,
-          verdict: judgment.verdict,
+          verdict,
           confidence: judgment.confidence,
           rebuildable: judgment.rebuildable,
-          reason: judgment.reason,
+          reason,
           consequence: judgment.consequence,
           revival: judgment.revival,
           evidence: judgment.evidence,
@@ -261,14 +285,15 @@ export default function App() {
       }
       aiIdsRef.current = nextAiIds;
       applyJudgment(entriesRef.current, nextHits, nextAiIds);
-      if (response.aiStatus !== "ok") setAiNotice(AI_STATUS_TEXT[response.aiStatus]);
+      const downgradeNote = downgraded > 0 ? `；其中 ${downgraded} 项因置信度不足降为「需要确认」` : "";
+      if (response.aiStatus !== "ok") setAiNotice(AI_STATUS_TEXT[response.aiStatus] + downgradeNote);
       else if (response.judgments.length) {
-        setAiNotice(response.cachedCount > 0
+        setAiNotice((response.cachedCount > 0
           ? `共享知识库命中 ${response.cachedCount} 条，其余 ${response.judgments.length - response.cachedCount} 条由云端 AI 判定`
-          : `云端 AI 判定了 ${response.judgments.length} 个未识别目录`);
+          : `云端 AI 判定了 ${response.judgments.length} 个未识别目录`) + downgradeNote);
       } else setAiNotice(null);
     } catch (err) {
-      setAiNotice(`${apiErrorText(err)}；这些目录保持「需要你确认」，不会被自动删除。`);
+      setAiNotice(`${apiErrorText(err)}；已回退本地规则，这些目录保持「需要确认」，不会被自动删除。`);
     } finally {
       setAiBusy(false);
     }
@@ -313,7 +338,11 @@ export default function App() {
       const judged = applyJudgment(all, hits, new Set());
       setProgress({ ...result.progress, phase: "ready" });
       const list = await refreshQuarantine(root);
-      await enrichWithAi(judged);
+      if (localOnlyRef.current) {
+        setAiNotice("已启用「仅使用本地规则」：未识别目录按本地启发式判定，不向云端发送任何数据。");
+      } else {
+        await enrichWithAi(judged);
+      }
       // 扫描后即建立/更新文件夹名录，清理后再追加运维手册
       await writeJournal(root, null, new Set(list.filter((r) => !r.restored).map((r) => r.originalPath)));
     } catch (err) {
@@ -352,6 +381,16 @@ export default function App() {
     try {
       const root = await openSandboxRoot();
       if (!await sandboxReady(root)) {
+        // 生成期间就切进结果工作台：首屏宣传到此为止，进度与骨架都在产品界面里显示
+        rootRef.current = root;
+        setSource("sandbox");
+        setRootLabel(SANDBOX_LABEL);
+        setGroups([]);
+        setSelectedIds(new Set());
+        setDrawerOpen(false);
+        setDrawerIds([]);
+        setView("review");
+        setProgress({ ...IDLE_PROGRESS, phase: "scanning" });
         await generateSandbox(root, (created, total) => setSandboxProgress({ created, total }));
       }
       await runScan(root, "sandbox", SANDBOX_LABEL);
@@ -499,20 +538,25 @@ export default function App() {
 
   const handleQuarantine = useCallback(async () => {
     const root = rootRef.current;
-    if (!root || !selectedEntries.length) return;
+    // 扫描未完成（或正在操作）时不提供隔离：门禁在 handler 与按钮两侧都生效
+    if (!root || !selectedEntries.length || busy || progress.phase !== "ready") return;
     setBusy(true);
+    setQuarantineProgress(null);
     try {
       await ensureWritePermission(root);
-      const skipped: string[] = [];
-      const created = await quarantineEntries(
+      const outcome = await quarantineEntries(
         root, selectedEntries, QUARANTINE_TTL_DAYS,
-        (skip) => skipped.push(skip.path),
+        undefined,
+        (done, total) => setQuarantineProgress({ done, total }),
       );
+      const { created, skipped, failures } = outcome;
       if (created.length === 0) {
         setConfirmOpen(false);
         toast.warning(skipped.length > 0
           ? `没有隔离任何内容：${skipped.length} 项已有未还原的隔离记录，原位置却又出现了同名内容。先到隔离区处理旧记录，再回来重试。`
-          : "没有可隔离的条目。");
+          : failures.length > 0
+            ? `隔离失败（原文件保留）：${failures[0].reason}`
+            : "没有可隔离的条目。");
         return;
       }
       const moved = new Set(created.map((r) => r.originalPath));
@@ -534,43 +578,71 @@ export default function App() {
       if (skipped.length > 0) {
         toast.warning(`${skipped.length} 项被跳过：已有未还原的隔离记录，原位置却又出现了同名内容。`);
       }
+      if (failures.length > 0) {
+        toast.error(`${failures.length} 项隔离失败，原文件保留：${failures[0].reason}`);
+      }
       setView("quarantine");
     } catch (err) {
       toast.error(`隔离失败：${errorMessage(err)}`);
     } finally {
       setBusy(false);
+      setQuarantineProgress(null);
     }
-  }, [selectedEntries, applyJudgment, refreshQuarantine, writeJournal]);
+  }, [selectedEntries, busy, progress.phase, applyJudgment, refreshQuarantine, writeJournal]);
 
   const handleQuarantineOne = useCallback((entry: JudgedEntry) => {
+    if (progress.phase !== "ready") return;
     setSelectedIds(new Set([entry.id]));
     setConfirmOpen(true);
-  }, []);
+  }, [progress.phase]);
 
-  const handleRestore = useCallback(async (record: QuarantineRecord) => {
+  const doRestore = useCallback(async (record: QuarantineRecord, policy: RestorePolicy) => {
     const root = rootRef.current;
-    if (!root) return;
+    if (!root || busyId) return;
     setBusyId(record.id);
+    setRestoreBusy(true);
     try {
       await ensureWritePermission(root);
-      await restoreEntries(root, [record]);
+      const outcome = await restoreEntries(root, [record], policy);
       const list = await refreshQuarantine(root);
-      await writeJournal(root, {
-        operation: "restore",
-        at: Date.now(),
-        items: itemsFromRecords([record]),
-      }, new Set(list.filter((r) => !r.restored).map((r) => r.originalPath)));
-      toast.success(`已还原到原位置：${record.originalPath}`);
+      if (outcome.restored.length > 0) {
+        await writeJournal(root, {
+          operation: "restore",
+          at: Date.now(),
+          items: itemsFromRecords(outcome.restored),
+        }, new Set(list.filter((r) => !r.restored).map((r) => r.originalPath)));
+        toast.success(`已还原到原位置：${record.originalPath}`);
+      }
+      if (outcome.failures.length > 0) {
+        toast.error(`还原失败：${outcome.failures[0].reason}`);
+      }
     } catch (err) {
       toast.error(`还原失败：${errorMessage(err)}`);
     } finally {
       setBusyId(null);
+      setRestoreBusy(false);
     }
-  }, [refreshQuarantine, writeJournal]);
+  }, [busyId, refreshQuarantine, writeJournal]);
+
+  const handleRestore = useCallback(async (record: QuarantineRecord) => {
+    const root = rootRef.current;
+    if (!root || busy || busyId) return;
+    try {
+      // 同名冲突必须先问用户：跳过 / 保留两份 / 替换，不静默覆盖
+      const conflicts = await restoreConflicts(root, [record]);
+      if (conflicts.length > 0) {
+        setRestoreConflict(record);
+        return;
+      }
+      await doRestore(record, "skip");
+    } catch (err) {
+      toast.error(`还原失败：${errorMessage(err)}`);
+    }
+  }, [busy, busyId, doRestore]);
 
   const handleDeleteRecord = useCallback(async (record: QuarantineRecord) => {
     const root = rootRef.current;
-    if (!root) return;
+    if (!root || busy || busyId) return;
     setBusyId(record.id);
     try {
       await ensureWritePermission(root);
@@ -588,11 +660,11 @@ export default function App() {
     } finally {
       setBusyId(null);
     }
-  }, [refreshQuarantine, writeJournal]);
+  }, [busy, busyId, refreshQuarantine, writeJournal]);
 
   const handleClearQuarantine = useCallback(async () => {
     const root = rootRef.current;
-    if (!root) return;
+    if (!root || busy) return;
     setBusy(true);
     try {
       const active = records.filter((r) => !r.restored);
@@ -611,11 +683,12 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [records, refreshQuarantine, writeJournal]);
+  }, [records, busy, refreshQuarantine, writeJournal]);
 
   const handlePurgeExpired = useCallback(async () => {
     const root = rootRef.current;
-    if (!root || !expiredRecords.length) return;
+    if (!root || !expiredRecords.length || busy) return;
+    setPurgeOpen(false);
     setBusy(true);
     try {
       await ensureWritePermission(root);
@@ -635,7 +708,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [expiredRecords.length, records, writeJournal]);
+  }, [expiredRecords.length, records, busy, writeJournal]);
 
   const diagnosisTargets = useMemo(() => {
     const targets: string[] = [];
@@ -809,17 +882,32 @@ export default function App() {
                     onUseSandbox={() => void handleSandbox()}
                   />
                 )}
-                <Panel className="dc-tone-info dc-rail grid gap-1.5 rounded-xl px-4 py-3.5">
-                  <h2 className="dc-display flex items-center gap-2 text-sm font-semibold tracking-wide">
-                    <ShieldCheck aria-hidden className="dc-tone-text size-4" />
-                    能力边界，先说清楚
-                  </h2>
-                  <p className="text-xs leading-relaxed text-muted-foreground">
-                    浏览器读不到注册表、服务与卸载器，这是能力边界而不是权限问题。
-                    所以「删了又复活」的顽固软件走两步：洁灵生成<strong className="text-foreground">只读</strong>诊断脚本，
-                    你在本机运行后把 JSON 粘回来，AI 再给出复活机制、官方卸载路径与逐项可选的清理脚本。
-                    任何触及注册表或卸载的动作，都会先向你申请确认。
-                  </p>
+                <Panel className="dc-tone-info dc-rail rounded-xl px-4 py-3">
+                  <Collapsible>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <h2 className="dc-display flex items-center gap-2 text-sm font-semibold tracking-wide">
+                        <ShieldCheck aria-hidden className="dc-tone-text size-4" />
+                        能力边界，先说清楚
+                      </h2>
+                      <p className="min-w-0 flex-1 text-xs leading-relaxed text-muted-foreground">
+                        浏览器读不到注册表与卸载器；顽固软件靠「只读诊断脚本 + AI 分析」处理，动注册表前必先征得你同意。
+                      </p>
+                      <CollapsibleTrigger asChild>
+                        <Button variant="ghost" size="xs" className="group/boundary ml-auto shrink-0 text-muted-foreground">
+                          详细说明
+                          <ChevronDown aria-hidden className="transition-transform duration-200 group-data-[state=open]/boundary:rotate-180" />
+                        </Button>
+                      </CollapsibleTrigger>
+                    </div>
+                    <CollapsibleContent>
+                      <p className="mt-2 border-t border-hairline pt-2.5 text-xs leading-relaxed text-muted-foreground">
+                        这是能力边界而不是权限问题：网页无法枚举服务、计划任务与卸载器。
+                        所以「删了又复活」的顽固软件走两步：洁灵生成<strong className="text-foreground">只读</strong>诊断脚本，
+                        你在本机运行后把 JSON 粘回来，AI 再给出复活机制、官方卸载路径与逐项可选的清理脚本。
+                        任何触及注册表或卸载的动作，都会先向你申请确认；优先走官方卸载器，手改注册表是最后手段。
+                      </p>
+                    </CollapsibleContent>
+                  </Collapsible>
                 </Panel>
               </>
             ) : (
@@ -828,12 +916,24 @@ export default function App() {
                   <ScanStatusBar
                     progress={progress}
                     rootLabel={rootLabel}
+                    preparing={sandboxProgress}
                     onCancel={handleCancelScan}
                   />
-                  <p className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
-                    <ShieldCheck aria-hidden className="dc-tone-safe dc-tone-text size-3.5 shrink-0" />
-                    {PRODUCT_PHILOSOPHY}
-                  </p>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-1">
+                    <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <ShieldCheck aria-hidden className="dc-tone-safe dc-tone-text size-3.5 shrink-0" />
+                      勾选后移入隔离区，{QUARANTINE_TTL_DAYS} 天内可一键还原；到期后仍需你明确同意才彻底删除。
+                    </p>
+                    <label htmlFor="local-only" className="ml-auto flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+                      <Switch
+                        id="local-only"
+                        checked={localOnly}
+                        onCheckedChange={setLocalOnly}
+                        disabled={aiBusy}
+                      />
+                      仅使用本地规则
+                    </label>
+                  </div>
                 </div>
 
                 {error && (
@@ -946,6 +1046,7 @@ export default function App() {
                           activeEntryId={drawerOpen ? drawerEntry?.id ?? null : null}
                           loading={scanning}
                           scannedCount={judgedRef.current.length}
+                          totalBytes={progress.bytes}
                           truncated={progress.truncated}
                           stopped={progress.stopped}
                           source={source}
@@ -967,7 +1068,7 @@ export default function App() {
                             </strong>
                             到期清理会彻底删除这些内容，不可还原，需要你确认后执行。
                           </p>
-                          <Button size="sm" variant="destructive" onClick={() => void handlePurgeExpired()} disabled={busy}>
+                          <Button size="sm" variant="destructive" onClick={() => setPurgeOpen(true)} disabled={busy}>
                             {busy ? <Spinner /> : <TriangleAlert aria-hidden />}
                             清理到期项
                           </Button>
@@ -980,6 +1081,8 @@ export default function App() {
                         onDelete={(record) => void handleDeleteRecord(record)}
                         onClearAll={() => void handleClearQuarantine()}
                         busyId={busyId}
+                        busy={busy}
+                        source={source}
                       />
 
                       <Panel className="grid gap-2.5 rounded-xl px-4 py-3.5">
@@ -1223,7 +1326,7 @@ export default function App() {
               </>
             )}
 
-            <footer className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-hairline pt-3 text-[11px] text-muted-foreground">
+            <footer className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-hairline pt-3 text-xs text-muted-foreground">
               <span className="dc-display tracking-wide">{PRODUCT_NAME}</span>
               <span aria-hidden className="text-hairline">/</span>
               <span>{PRODUCT_PHILOSOPHY}</span>
@@ -1240,6 +1343,8 @@ export default function App() {
               onQuarantine={() => setConfirmOpen(true)}
               onClear={() => setSelectedIds(new Set())}
               busy={busy}
+              disabled={phase !== "ready"}
+              busyLabel={quarantineProgress ? `隔离中 ${quarantineProgress.done}/${quarantineProgress.total}` : null}
               awayFromReview={view !== "review"}
               onGoReview={() => setView("review")}
             />
@@ -1256,7 +1361,7 @@ export default function App() {
           onDiagnose={handleDiagnoseEntry}
           onNavigate={navigateDrawer}
           position={drawerEntry ? { index: drawerIndex, total: drawerIds.length } : null}
-          busy={busy}
+          busy={busy || phase !== "ready"}
         />
 
         <ConfirmQuarantineDialog
@@ -1265,7 +1370,40 @@ export default function App() {
           entries={selectedEntries}
           onConfirm={() => void handleQuarantine()}
           busy={busy}
+          busyLabel={quarantineProgress ? `隔离中 ${quarantineProgress.done}/${quarantineProgress.total}` : null}
         />
+
+        <RestoreConflictDialog
+          open={restoreConflict !== null}
+          onOpenChange={(open) => { if (!open) setRestoreConflict(null); }}
+          record={restoreConflict}
+          busy={restoreBusy}
+          onChoose={(policy) => {
+            const record = restoreConflict;
+            setRestoreConflict(null);
+            if (record) void doRestore(record, policy);
+          }}
+        />
+
+        <AlertDialog open={purgeOpen} onOpenChange={setPurgeOpen}>
+          <AlertDialogContent className="dc-panel dc-tone-danger rounded-xl">
+            <AlertDialogHeader>
+              <AlertDialogTitle className="dc-display tracking-wide">
+                彻底删除 {expiredRecords.length} 项到期内容？
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                这些条目已超过 {QUARANTINE_TTL_DAYS} 天保留期。执行后将从隔离区永久移除，无法再还原；
+                运维手册与文件夹名录作为审计历史保留。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>取消</AlertDialogCancel>
+              <AlertDialogAction variant="destructive" disabled={busy} onClick={() => void handlePurgeExpired()}>
+                确认彻底删除
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>
           <AlertDialogContent className="dc-panel dc-tone-review rounded-xl">

@@ -1,4 +1,5 @@
 import { QUARANTINE_DIR } from "../core/constants";
+import type { ScanEntry } from "../core/types";
 import { ensureDirectoryPath, errorMessage, writeTextFile } from "./adapter";
 
 export const SANDBOX_LABEL = "样本磁盘（沙盒）";
@@ -307,12 +308,111 @@ function buildOps(): SandboxOp[] {
   return ops;
 }
 
+// 样本树只构建一次：首屏预览与真实生成共用同一份定义，体积与判定不会和实际磁盘对不上
+let opsCache: SandboxOp[] | null = null;
+
+function sandboxOps(): SandboxOp[] {
+  opsCache ??= buildOps();
+  return opsCache;
+}
+
+/**
+ * 把样本定义换算成与扫描引擎同构的条目树（id=path、目录体积为后代文件合计、
+ * isEmptyDir 看直接子项），首屏预览因此能跑真实的指纹匹配，而不是写死的宣传数字。
+ */
+export function sandboxPreviewTree(): ScanEntry[] {
+  const nodes = new Map<string, ScanEntry>();
+
+  const ensureDir = (path: string, depth: number, parentId: string | null): ScanEntry => {
+    const existing = nodes.get(path);
+    if (existing) return existing;
+    const parts = path.split("/");
+    const node: ScanEntry = {
+      id: path,
+      path,
+      name: parts[parts.length - 1],
+      kind: "directory",
+      size: 0,
+      fileCount: 0,
+      lastModified: 0,
+      depth,
+      isEmptyDir: true,
+      parentId,
+      childIds: [],
+    };
+    nodes.set(path, node);
+    return node;
+  };
+
+  for (const op of sandboxOps()) {
+    const parts = op.path.split("/");
+    let parentId: string | null = null;
+    let parentPath = "";
+    for (let i = 0; i < parts.length - 1; i++) {
+      const dirPath = parts.slice(0, i + 1).join("/");
+      const dir = ensureDir(dirPath, i, parentId);
+      if (parentPath) {
+        const parent = nodes.get(parentPath);
+        if (parent && !parent.childIds.includes(dirPath)) parent.childIds.push(dirPath);
+      }
+      parentPath = dirPath;
+      parentId = dirPath;
+    }
+
+    const isFile = op.content !== undefined;
+    const depth = parts.length - 1;
+    const size = op.content?.length ?? 0;
+    const node: ScanEntry = isFile
+      ? {
+          id: op.path,
+          path: op.path,
+          name: parts[parts.length - 1],
+          kind: "file",
+          size,
+          fileCount: 1,
+          lastModified: 0,
+          depth,
+          isEmptyDir: false,
+          parentId,
+          childIds: [],
+        }
+      : ensureDir(op.path, depth, parentId);
+
+    if (parentId) {
+      const parent = nodes.get(parentId);
+      if (parent) {
+        if (!parent.childIds.includes(op.path)) parent.childIds.push(op.path);
+        parent.isEmptyDir = false;
+      }
+    }
+    if (isFile) nodes.set(op.path, node);
+
+    // 体积与文件数沿祖先链累加，和扫描引擎的目录聚合口径一致
+    let cursor = parentId;
+    while (cursor) {
+      const ancestor = nodes.get(cursor);
+      if (!ancestor) break;
+      if (isFile) {
+        ancestor.size += size;
+        ancestor.fileCount += 1;
+      }
+      cursor = ancestor.parentId;
+    }
+  }
+
+  // 目录体积已在累加中得到；空目录标记按直接子项复核一次
+  for (const node of nodes.values()) {
+    if (node.kind === "directory") node.isEmptyDir = node.childIds.length === 0;
+  }
+  return [...nodes.values()];
+}
+
 export async function generateSandbox(
   root: FileSystemDirectoryHandle,
   onProgress?: (done: number, total: number) => void,
   skipPaths?: ReadonlySet<string>,
 ): Promise<void> {
-  const ops = buildOps();
+  const ops = sandboxOps();
   const total = ops.length;
   const dirCache = new Map<string, FileSystemDirectoryHandle>([["", root]]);
   let done = 0;

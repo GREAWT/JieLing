@@ -1,8 +1,9 @@
 import { ChevronRight, File, Folder, Lock } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
+import { VERDICT_ACTION } from "@/src/core/constants";
 import type { JudgedEntry } from "@/src/core/types";
-import { RevivalBadge, SizeValue, SourceTag, VerdictBadge } from "./shared";
+import { OWNER_KIND_LABEL, RevivalBadge, SizeValue, SourceTag, VerdictBadge } from "./shared";
 
 export interface EntryRowProps {
   entry: JudgedEntry;
@@ -74,6 +75,10 @@ export function EntryRow({
               {entry.path}
             </span>
             <span className="mt-1 line-clamp-1 block text-xs text-muted-foreground">
+              <span className="text-foreground/80">
+                身份 {entry.hit?.owner ?? "未识别"}（{OWNER_KIND_LABEL[entry.hit?.ownerKind ?? "unknown"]}）
+              </span>
+              {" · "}
               {entrySummary(entry)}
             </span>
           </span>
@@ -84,6 +89,9 @@ export function EntryRow({
             ) : (
               <SizeValue bytes={entry.size} />
             )}
+            <span className="max-w-36 truncate text-xs text-muted-foreground" title={VERDICT_ACTION[entry.verdict]}>
+              {VERDICT_ACTION[entry.verdict]}
+            </span>
             <ChevronRight
               aria-hidden
               className={cn(

@@ -100,7 +100,7 @@ export function OwnerGroupCard({
                     <RevivalBadge mechanisms={group.revival} interactive={false} />
                   )}
                   {group.hasAiJudgment && (
-                    <span className="dc-tone-ai dc-tone-bg dc-tone-text dc-tone-border inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium">
+                    <span className="dc-tone-ai dc-tone-bg dc-tone-text dc-tone-border inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium">
                       <Sparkles aria-hidden className="size-3" />
                       AI 判定
                     </span>
@@ -157,7 +157,7 @@ export function OwnerGroupCard({
                       )}
                     >
                       <span className="dc-label dc-tone-text">{VERDICT_LABEL[entry.verdict]}</span>
-                      <span className="dc-num text-[11px] opacity-80">{group.counts[entry.verdict]} 项</span>
+                      <span className="dc-num text-xs opacity-80">{group.counts[entry.verdict]} 项</span>
                     </li>
                   )}
                   <EntryRow

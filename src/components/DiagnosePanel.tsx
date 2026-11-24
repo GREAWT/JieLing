@@ -213,10 +213,10 @@ export function DiagnosePanel({
                   <div className="grid min-w-0 flex-1 gap-1.5">
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                       <span className="text-sm font-medium">{action.label}</span>
-                      <span className={cn("dc-tone-bg dc-tone-text dc-tone-border rounded-full border px-2 py-0.5 text-[11px]", danger.tone)}>
+                      <span className={cn("dc-tone-bg dc-tone-text dc-tone-border rounded-full border px-2 py-0.5 text-xs", danger.tone)}>
                         {danger.label}
                       </span>
-                      <span className="inline-flex items-center gap-1 rounded-full border border-hairline px-2 py-0.5 text-[11px] text-muted-foreground">
+                      <span className="inline-flex items-center gap-1 rounded-full border border-hairline px-2 py-0.5 text-xs text-muted-foreground">
                         {action.reversible ? <Undo2 aria-hidden className="size-3" /> : <Check aria-hidden className="size-3" />}
                         {action.reversible ? "可撤销" : "不可撤销"}
                       </span>

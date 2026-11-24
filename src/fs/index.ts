@@ -5,9 +5,10 @@ export {
 } from "./adapter";
 export { createScanner, type Scanner } from "./scan";
 export {
-  quarantineEntries, listQuarantine, restoreEntries, purgeExpired, emptyQuarantine, deleteQuarantined,
+  quarantineEntries, listQuarantine, restoreEntries, restoreConflicts, purgeExpired,
+  emptyQuarantine, deleteQuarantined, checkQuarantineSpace,
 } from "./quarantine";
-export { SANDBOX_LABEL, SANDBOX_MARKER, generateSandbox, clearSandbox, sandboxReady } from "./sandbox";
+export { SANDBOX_LABEL, SANDBOX_MARKER, generateSandbox, clearSandbox, sandboxReady, sandboxPreviewTree } from "./sandbox";
 export {
   OPS_MANUAL_NAME, FOLDER_DICTIONARY_NAME, JOURNAL_NAMES,
   appendOpsManual, syncFolderDictionary, readJournal,

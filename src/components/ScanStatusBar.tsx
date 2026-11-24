@@ -1,5 +1,6 @@
 import { Check, OctagonX, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import type { ScanProgress } from "@/src/core/types";
@@ -9,12 +10,17 @@ export interface ScanStatusBarProps {
   progress: ScanProgress;
   rootLabel?: string;
   onCancel?: () => void;
+  /** 样本磁盘正在生成：扫描尚未开始，但用户已经在工作台里，进度必须如实显示 */
+  preparing?: { created: number; total: number } | null;
 }
 
-export function ScanStatusBar({ progress, rootLabel, onCancel }: ScanStatusBarProps) {
+export function ScanStatusBar({ progress, rootLabel, onCancel, preparing = null }: ScanStatusBarProps) {
   const { phase, visited, bytes, currentPath, truncated, stopped } = progress;
-  if (phase === "idle") return null;
-  const busy = phase === "scanning" || phase === "judging";
+  if (phase === "idle" && !preparing) return null;
+  const busy = phase === "scanning" || phase === "judging" || preparing !== null;
+  const percent = preparing && preparing.total > 0
+    ? Math.min(100, Math.round((preparing.created / preparing.total) * 100))
+    : null;
 
   return (
     <section
@@ -37,21 +43,32 @@ export function ScanStatusBar({ progress, rootLabel, onCancel }: ScanStatusBarPr
             <TriangleAlert aria-hidden className="dc-tone-danger dc-tone-text size-4" />
           )}
           <span className={cn("dc-display text-sm font-semibold", busy && "dc-blink")}>
-            {PHASE_LABEL[phase]}
+            {preparing ? "正在生成样本磁盘" : PHASE_LABEL[phase]}
           </span>
         </span>
 
-        <span className="flex items-baseline gap-1.5 text-xs text-muted-foreground">
-          已访问
-          <span className="dc-num text-sm font-semibold text-foreground">
-            {visited.toLocaleString("zh-CN")}
+        {preparing ? (
+          <span className="dc-num flex items-baseline gap-1.5 text-xs text-muted-foreground">
+            <span className="text-sm font-semibold text-foreground">
+              {preparing.created.toLocaleString("zh-CN")}
+            </span>
+            / {preparing.total.toLocaleString("zh-CN")} 个条目
           </span>
-          项
-        </span>
+        ) : (
+          <>
+            <span className="flex items-baseline gap-1.5 text-xs text-muted-foreground">
+              已访问
+              <span className="dc-num text-sm font-semibold text-foreground">
+                {visited.toLocaleString("zh-CN")}
+              </span>
+              项
+            </span>
 
-        <span className="flex items-baseline gap-1.5 text-xs text-muted-foreground">
-          累计 <SizeValue bytes={bytes} />
-        </span>
+            <span className="flex items-baseline gap-1.5 text-xs text-muted-foreground">
+              累计 <SizeValue bytes={bytes} />
+            </span>
+          </>
+        )}
 
         {rootLabel && (
           <span className="dc-path max-w-52 truncate text-muted-foreground" title={rootLabel}>
@@ -72,7 +89,7 @@ export function ScanStatusBar({ progress, rootLabel, onCancel }: ScanStatusBarPr
           </span>
         )}
 
-        {busy && onCancel && (
+        {busy && onCancel && !preparing && (
           <Button variant="outline" size="sm" className="ml-auto" onClick={onCancel}>
             <OctagonX aria-hidden />
             停止扫描
@@ -88,8 +105,16 @@ export function ScanStatusBar({ progress, rootLabel, onCancel }: ScanStatusBarPr
 
       {busy && (
         <div className="relative mt-2.5 grid gap-1.5">
-          <div aria-hidden className="dc-indeterminate h-1 rounded-full bg-muted" />
-          {currentPath && (
+          {percent !== null ? (
+            <Progress value={percent} aria-label="样本磁盘生成进度" />
+          ) : (
+            <div aria-hidden className="dc-indeterminate h-1 rounded-full bg-muted" />
+          )}
+          {preparing ? (
+            <p className="text-xs text-muted-foreground">
+              在浏览器沙箱（OPFS）里写入样本目录树，完成后立即开始扫描与判定。
+            </p>
+          ) : currentPath && (
             <p className="dc-path truncate text-muted-foreground" title={currentPath}>
               {currentPath}
             </p>

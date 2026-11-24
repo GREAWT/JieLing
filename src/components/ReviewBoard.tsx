@@ -41,6 +41,8 @@ export interface ReviewBoardProps {
   activeEntryId?: string | null;
   loading?: boolean;
   scannedCount?: number;
+  /** 扫描到的总占用（字节），来自扫描引擎累计，不含父子重复累加 */
+  totalBytes?: number;
   truncated?: boolean;
   stopped?: boolean;
   source?: ScanSource;
@@ -59,9 +61,9 @@ const SORT_LABEL: Record<SortKey, string> = {
 
 const FILTER_HINT: Record<Filter, string> = {
   all: "全部待决策条目",
-  safe_delete: "只看安全可删",
-  needs_review: "只看需要你确认",
-  keep_locked: "只看已保护项",
+  safe_delete: "只看推荐隔离",
+  needs_review: "只看需要确认",
+  keep_locked: "只看默认保护",
 };
 
 export function ReviewBoard({
@@ -74,6 +76,7 @@ export function ReviewBoard({
   activeEntryId = null,
   loading = false,
   scannedCount = 0,
+  totalBytes = 0,
   truncated = false,
   stopped = false,
   source,
@@ -172,44 +175,44 @@ export function ReviewBoard({
     onClick: () => void;
   }[] = [
     {
+      key: "total",
+      label: "扫描总占用",
+      tone: "dc-tone-info",
+      value: totalBytes,
+      unit: "",
+      sub: `共扫描 ${scannedCount.toLocaleString("zh-CN")} 项`,
+      active: !filtering,
+      onClick: () => { setFilter("all"); setOnlyRevival(false); setQuery(""); },
+    },
+    {
       key: "safe",
-      label: VERDICT_LABEL.safe_delete,
+      label: "可隔离空间",
       tone: VERDICT_TONE.safe_delete,
       value: totals.safe_delete.size,
       unit: "",
-      sub: `${totals.safe_delete.count} 项 · 删了不影响使用`,
+      sub: `${totals.safe_delete.count} 项 · ${VERDICT_LABEL.safe_delete}`,
       active: filter === "safe_delete",
       onClick: () => setFilter((f) => (f === "safe_delete" ? "all" : "safe_delete")),
     },
     {
       key: "review",
-      label: VERDICT_LABEL.needs_review,
+      label: "待确认项目",
       tone: VERDICT_TONE.needs_review,
-      value: totals.needs_review.size,
-      unit: "",
-      sub: `${totals.needs_review.count} 项 · 看清理由再决定`,
+      value: totals.needs_review.count,
+      unit: "项",
+      sub: `${formatBytes(totals.needs_review.size)} · 看清理由再决定`,
       active: filter === "needs_review",
       onClick: () => setFilter((f) => (f === "needs_review" ? "all" : "needs_review")),
     },
     {
       key: "locked",
-      label: VERDICT_LABEL.keep_locked,
+      label: "已保护项目",
       tone: VERDICT_TONE.keep_locked,
-      value: totals.keep_locked.size,
-      unit: "",
-      sub: `${totals.keep_locked.count} 项 · 已锁定，不参与勾选`,
+      value: totals.keep_locked.count,
+      unit: "项",
+      sub: `${formatBytes(totals.keep_locked.size)} · 禁止勾选`,
       active: filter === "keep_locked",
       onClick: () => setFilter((f) => (f === "keep_locked" ? "all" : "keep_locked")),
-    },
-    {
-      key: "revival",
-      label: "会复活",
-      tone: "dc-tone-ai",
-      value: totals.revivalGroups,
-      unit: "个软件",
-      sub: "删了会被重建 · 需先断来源",
-      active: onlyRevival,
-      onClick: () => setOnlyRevival((v) => !v),
     },
   ];
 
@@ -375,7 +378,7 @@ export function ReviewBoard({
               </button>
             </CollapsibleTrigger>
             <CollapsibleContent className="grid gap-3 border-t border-border p-3">
-              <p className="flex items-start gap-2 px-1 text-[13px] leading-relaxed text-muted-foreground">
+              <p className="flex items-start gap-2 px-1 text-sm leading-relaxed text-muted-foreground">
                 <ShieldCheck aria-hidden className="dc-tone-safe dc-tone-text mt-0.5 size-4 shrink-0" />
                 系统与软件关键文件。洁灵不会把它们放进勾选范围，展开只是为了让你看清「为什么别删」。
               </p>

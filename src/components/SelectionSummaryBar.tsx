@@ -10,6 +10,9 @@ export interface SelectionSummaryBarProps {
   onQuarantine: () => void;
   onClear: () => void;
   busy?: boolean;
+  /** 扫描未完成等情况下禁止发起隔离 */
+  disabled?: boolean;
+  busyLabel?: string | null;
   /** 选择跨 Tab 保留：不在审核台时给一个回去核对的入口 */
   onGoReview?: () => void;
   awayFromReview?: boolean;
@@ -21,6 +24,8 @@ export function SelectionSummaryBar({
   onQuarantine,
   onClear,
   busy = false,
+  disabled = false,
+  busyLabel = null,
   onGoReview,
   awayFromReview = false,
 }: SelectionSummaryBarProps) {
@@ -52,9 +57,9 @@ export function SelectionSummaryBar({
           <X aria-hidden />
           取消选择
         </Button>
-        <Button onClick={onQuarantine} disabled={busy} className="dc-tone-safe">
+        <Button onClick={onQuarantine} disabled={busy || disabled} className="dc-tone-safe">
           {busy ? <Spinner /> : <Archive aria-hidden />}
-          移入隔离区
+          {busy ? (busyLabel ?? "隔离中…") : "移入隔离区"}
         </Button>
       </div>
     </div>

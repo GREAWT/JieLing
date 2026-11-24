@@ -66,10 +66,20 @@ export const VERDICT_ORDER: Record<Verdict, number> = {
 };
 
 export const VERDICT_LABEL: Record<Verdict, string> = {
-  safe_delete: "安全可删",
-  needs_review: "需要你确认",
-  keep_locked: "建议保留",
+  safe_delete: "推荐隔离",
+  needs_review: "需要确认",
+  keep_locked: "默认保护",
 };
+
+/** 每个风险等级对应的建议动作，工作台列表与抽屉共用 */
+export const VERDICT_ACTION: Record<Verdict, string> = {
+  safe_delete: "勾选后移入隔离区",
+  needs_review: "展开依据，确认后再勾选",
+  keep_locked: "保留，不参与勾选",
+};
+
+/** AI 判定低于该置信度时，「推荐隔离」一律降档为「需要确认」 */
+export const AI_SAFE_CONFIDENCE = 0.8;
 
 export const REVIVAL_LABEL: Record<string, string> = {
   autostart_service: "服务自启重建",

@@ -68,9 +68,9 @@ function consequenceOf(entry: JudgedEntry): string {
 }
 
 function verdictLine(entry: JudgedEntry): string {
-  if (entry.verdict === "keep_locked") return "不能删：已被系统规则锁定，不参与勾选。";
-  if (entry.verdict === "safe_delete") return "可以删：缓存 / 临时 / 可重建内容，删了不影响使用。";
-  return "需要你确认：可能有价值或有风险，看清理由再决定。";
+  if (entry.verdict === "keep_locked") return `${VERDICT_LABEL.keep_locked}：已被系统规则锁定，禁止勾选，也不会被移入隔离区。`;
+  if (entry.verdict === "safe_delete") return `${VERDICT_LABEL.safe_delete}：缓存 / 临时 / 可重建内容，删了不影响使用。`;
+  return `${VERDICT_LABEL.needs_review}：可能有价值或有风险，看清依据与后果再决定。`;
 }
 
 async function copyText(text: string): Promise<void> {
@@ -155,7 +155,7 @@ function DrawerBody({
             <span className="dc-num text-xs text-muted-foreground">
               {position.index + 1} / {position.total}
             </span>
-            <span className="ml-auto hidden text-[11px] text-muted-foreground sm:block">← → 切换条目</span>
+            <span className="ml-auto hidden text-xs text-muted-foreground sm:block">← → 切换条目</span>
           </div>
         )}
       </header>
@@ -180,7 +180,8 @@ function DrawerBody({
             )}
           </Step>
 
-          <div className="dc-panel grid gap-3 p-3.5">
+          {/* 抽屉本身已是卡片：内部用分隔线与间距组织，不再套描边面板 */}
+          <div className="grid gap-3 border-t border-hairline pt-4">
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="grid gap-0.5">
                 <p className="dc-label">归属</p>
@@ -206,7 +207,7 @@ function DrawerBody({
                 <p className="dc-num text-sm">{entry.depth}</p>
               </div>
             </div>
-            <div className="grid gap-1">
+            <div className="grid gap-1 border-t border-hairline pt-3">
               <p className="dc-label">完整路径（相对扫描根）</p>
               <div className="flex items-start gap-2">
                 <p className="dc-path min-w-0 flex-1 break-all text-foreground">{entry.path}</p>
@@ -216,7 +217,7 @@ function DrawerBody({
               </div>
             </div>
             {hit && (
-              <div className="grid gap-1.5">
+              <div className="grid gap-1.5 border-t border-hairline pt-3">
                 <div className="flex items-center justify-between gap-2">
                   <p className="dc-label">判定置信度</p>
                   <p className="dc-num text-sm font-semibold">{Math.round(hit.confidence * 100)}%</p>
@@ -235,9 +236,9 @@ function DrawerBody({
           </div>
 
           {hit && hit.evidence.length > 0 && (
-            <div className="grid gap-1.5">
+            <div className="grid gap-1.5 border-t border-hairline pt-4">
               <p className="dc-label">判断依据</p>
-              <ul className="dc-panel grid gap-1 p-3">
+              <ul className="grid gap-1.5">
                 {hit.evidence.map((item) => (
                   <li key={item} className="dc-path flex items-start gap-2 break-all text-muted-foreground">
                     <span aria-hidden className="dc-tone-info dc-tone-text mt-1.5 size-1 shrink-0 rounded-full bg-current" />
@@ -249,7 +250,7 @@ function DrawerBody({
           )}
 
           {orderedRevival.length > 0 && (
-            <div className="dc-panel dc-tone-review dc-rail grid gap-2 p-3.5">
+            <div className="dc-tone-review grid gap-2 border-t border-hairline pt-4">
               <p className="dc-label dc-tone-text">复活风险 · 先断来源再删文件</p>
               <ol className="grid gap-1.5">
                 {orderedRevival.map((m, i) => (

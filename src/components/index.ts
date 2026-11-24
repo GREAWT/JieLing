@@ -21,4 +21,8 @@ export {
   ConfirmQuarantineDialog,
   type ConfirmQuarantineDialogProps,
 } from "./ConfirmQuarantineDialog";
+export {
+  RestoreConflictDialog,
+  type RestoreConflictDialogProps,
+} from "./RestoreConflictDialog";
 export { formatBytes, formatDateTime } from "./shared";

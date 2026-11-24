@@ -53,8 +53,8 @@ export const AI_STATUS_TEXT: Record<AiStatus, string> = {
   rate_limited: "请求过于频繁，请稍后再试；本地知识库判定仍然可用",
   initializing: "云端 AI 正在首次初始化，稍后重试即可",
   not_configured: "云端 AI 尚未启用，当前使用本地知识库判定",
-  timeout: "云端 AI 响应超时，这些目录保持「需要你确认」",
-  unavailable: "云端 AI 暂时不可用，这些目录保持「需要你确认」",
+  timeout: "云端 AI 响应超时，已回退本地规则，这些目录保持「需要确认」",
+  unavailable: "云端 AI 暂时不可用，已回退本地规则，这些目录保持「需要确认」",
 };
 
 export class ApiError extends Error {
@@ -284,10 +284,14 @@ export function toJudgeItem(entry: ScanEntry, byId: Map<string, ScanEntry>, key:
       if (dot > 0 && dot < child.name.length - 1) exts.add(child.name.slice(dot, dot + 16).toLowerCase());
     }
   }
+  const ancestors = segments.slice(0, -1);
+  const parentIsProfile = ancestors.length > 0
+    && /^(Users|home|Documents and Settings)$/i.test(ancestors[ancestors.length - 1]);
   return {
     key,
-    name: entry.name.slice(0, 200),
-    ancestors: redactAncestors(segments.slice(0, -1)).slice(-8).map((s) => s.slice(0, 120)),
+    // 目录名本身可能就是 Windows 账户名（Users 下的 profile 目录）：同样脱敏
+    name: parentIsProfile ? "<user>" : entry.name.slice(0, 200),
+    ancestors: redactAncestors(ancestors).slice(-8).map((s) => s.slice(0, 120)),
     childDirs,
     childExts: [...exts].slice(0, 12),
     fileCount: entry.fileCount,
