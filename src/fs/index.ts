@@ -5,7 +5,8 @@ export {
 } from "./adapter";
 export { createScanner, type Scanner } from "./scan";
 export {
-  quarantineEntries, listQuarantine, restoreEntries, restoreConflicts, purgeExpired,
+  quarantineEntries, listQuarantine, readQuarantineReadOnly, loadQuarantineForScan,
+  restoreEntries, restoreConflicts, purgeExpired,
   emptyQuarantine, deleteQuarantined, checkQuarantineSpace,
 } from "./quarantine";
 export { SANDBOX_LABEL, SANDBOX_MARKER, generateSandbox, clearSandbox, sandboxReady, sandboxPreviewTree } from "./sandbox";

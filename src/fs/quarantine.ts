@@ -819,6 +819,43 @@ export async function listQuarantine(root: FileSystemDirectoryHandle): Promise<Q
   return readManifest(root, qDir);
 }
 
+/**
+ * 扫描阶段专用：只读取已有隔离记录，不创建目录、不修复清单、不写任何文件。
+ * 真实目录扫描即使此前已有写权限，也必须保持“只扫描，不修改”。
+ */
+export async function readQuarantineReadOnly(root: FileSystemDirectoryHandle): Promise<QuarantineRecord[]> {
+  let qDir: FileSystemDirectoryHandle;
+  try {
+    qDir = await root.getDirectoryHandle(QUARANTINE_DIR);
+  } catch (err) {
+    if (isNotFoundError(err)) return [];
+    throw new Error(`读取隔离区失败: ${errorMessage(err)}`, { cause: err });
+  }
+  let fileHandle: FileSystemFileHandle;
+  try {
+    fileHandle = await qDir.getFileHandle(MANIFEST_NAME);
+  } catch (err) {
+    if (isNotFoundError(err)) return [];
+    throw new Error(`读取隔离清单失败: ${errorMessage(err)}`, { cause: err });
+  }
+  const text = await (await fileHandle.getFile()).text();
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isValidRecord).map(normalizeRecord);
+  } catch {
+    return [];
+  }
+}
+
+/** 扫描结束时决定是否允许写入：只有 OPFS 演示模式走可写清单 reconcile。 */
+export async function loadQuarantineForScan(
+  root: FileSystemDirectoryHandle,
+  source: "sandbox" | "local",
+): Promise<QuarantineRecord[]> {
+  return source === "sandbox" ? listQuarantine(root) : readQuarantineReadOnly(root);
+}
+
 // ---------- 还原 ----------
 
 /** 还原前探测同名冲突：无法确认时失败关闭，绝不把探测错误当成“没有冲突” */
@@ -1021,7 +1058,12 @@ export async function deleteQuarantined(
   return "content";
 }
 
-export async function emptyQuarantine(root: FileSystemDirectoryHandle): Promise<void> {
+export interface EmptyQuarantineOutcome {
+  removed: number;
+  failures: QuarantineFailure[];
+}
+
+export async function emptyQuarantine(root: FileSystemDirectoryHandle): Promise<EmptyQuarantineOutcome> {
   const qDir = await ensureQuarantineDir(root);
   const manifest = await readManifest(root, qDir);
   const uncertain = manifest.filter((record) =>
@@ -1031,16 +1073,29 @@ export async function emptyQuarantine(root: FileSystemDirectoryHandle): Promise<
   }
   const names: string[] = [];
   for await (const name of qDir.keys()) names.push(name);
+  const failedNames = new Set<string>();
+  const failures: QuarantineFailure[] = [];
+  let removed = 0;
   for (const name of names) {
     // 操作记录、恢复说明和损坏清单备份是审计痕迹，清空隔离区时必须保留
     if (isReservedQuarantineName(name) && name !== MANIFEST_NAME) continue;
     try {
       await qDir.removeEntry(name, { recursive: true });
+      removed += 1;
     } catch (err) {
       if (!isNotFoundError(err)) {
-        throw new Error(`清空隔离区失败（${name}）: ${errorMessage(err)}`, { cause: err });
+        failedNames.add(name);
+        failures.push({ path: name, reason: errorMessage(err) });
       }
     }
   }
-  await writeManifest(qDir, []);
+  const keep = manifest.filter((record) => {
+    try {
+      return failedNames.has(relativeToQuarantine(record));
+    } catch {
+      return true;
+    }
+  });
+  await writeManifest(qDir, keep);
+  return { removed, failures };
 }

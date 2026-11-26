@@ -251,12 +251,14 @@ try {
   const { judgeAll } = await server.ssrLoadModule("/src/safety/risk.ts");
   const { canQuarantineEntry, summarizeCoverage } = await server.ssrLoadModule("/src/safety/guard.ts");
   const {
-    quarantineEntries, restoreEntries, listQuarantine, emptyQuarantine, deleteQuarantined,
+    quarantineEntries, restoreEntries, listQuarantine, emptyQuarantine, loadQuarantineForScan,
+    readQuarantineReadOnly, deleteQuarantined,
   } = await server.ssrLoadModule("/src/fs/quarantine.ts");
 
   async function scan(rootHandle, overrides = {}) {
     const entries = [];
     let done;
+    let error = null;
     await runScan(
       rootHandle,
       {
@@ -269,10 +271,11 @@ try {
       (message) => {
         if (message.type === "batch") entries.push(...message.entries);
         if (message.type === "done") done = message.progress;
+        if (message.type === "error") error = message.message;
       },
       () => false,
     );
-    return { entries, progress: done };
+    return { entries, progress: done, error };
   }
 
   function byPath(entries, path) {
@@ -337,6 +340,14 @@ try {
     check("permission partial directory is locked", judged(entries).find((e) => e.path === "Parent")?.locked === true);
     const summary = summarizeCoverage(entries);
     check("coverage summary distinguishes reasons", summary.permissionPartial >= 1, summary);
+  }
+
+  {
+    const rootHandle = new FakeDirHandle("root");
+    rootHandle.addFile("secret.bin", "x");
+    rootHandle.throwAfter = 0;
+    const result = await scan(rootHandle);
+    check("unreadable scan root reports an error instead of empty success", result.error?.includes("无法读取所选目录"), result);
   }
 
   // ---------- 保守判定 ----------
@@ -616,6 +627,63 @@ try {
     check("content deletion leaves no quarantine copy", ![...quarantine.children.keys()]
       .some((name) => name.includes(encodeURIComponent("data/file.txt"))));
     check("content deletion keeps audit markdown", quarantine.has("文件夹名录.md"));
+  }
+
+  {
+    const rootHandle = new FakeDirHandle("root");
+    rootHandle.addFile("App/a.bin", "a", 1000);
+    rootHandle.addFile("App/b.bin", "b", 1000);
+    const { entries } = await scan(rootHandle);
+    const judgedEntries = judged(entries);
+    const quarantined = await quarantineEntries(rootHandle, [
+      judgedEntries.find((entry) => entry.path === "App/a.bin"),
+      judgedEntries.find((entry) => entry.path === "App/b.bin"),
+    ]);
+    const quarantine = rootHandle.children.get(".dareclean-quarantine");
+    const qFiles = [...quarantine.children.values()].filter((child) => child.kind === "file" && child.name.includes("__"));
+    qFiles[0].removeFails = true;
+    const partial = await emptyQuarantine(rootHandle);
+    check("partial clear reports its failure and removed count", partial.failures.length === 1
+      && partial.removed >= 1, partial);
+    const remaining = await listQuarantine(rootHandle);
+    check("partial clear keeps failed record and removes successful copy", remaining.length === 1
+      && remaining[0].status === "quarantined", { remaining, quarantined, partial });
+    qFiles[0].removeFails = false;
+    const again = await emptyQuarantine(rootHandle);
+    check("repeating clear after partial failure completes without stuck state", again.failures.length === 0
+      && (await listQuarantine(rootHandle)).length === 0, again);
+    const idempotent = await emptyQuarantine(rootHandle);
+    check("repeated clear on empty quarantine is safe", idempotent.failures.length === 0, idempotent);
+  }
+
+  // ---------- 扫描阶段只读 ----------
+
+  {
+    const rootHandle = new FakeDirHandle("root");
+    const loaded = await loadQuarantineForScan(rootHandle, "local");
+    check("read-only scan does not create quarantine directory without permission", loaded.length === 0
+      && !rootHandle.has(".dareclean-quarantine"), [...rootHandle.children.keys()]);
+  }
+
+  {
+    const rootHandle = new FakeDirHandle("root");
+    const quarantine = rootHandle.addDir(".dareclean-quarantine");
+    quarantine.addFile(qName("existing", "App/cache.bin"), "cached");
+    quarantine.setJson("manifest.json", [{
+      id: "existing", originalPath: "App/cache.bin", quarantinePath: `.dareclean-quarantine/${qName("existing", "App/cache.bin")}`,
+      size: 6, kind: "file", quarantinedAt: 1, expiresAt: Date.now() + 1000, owner: "App", reason: "test",
+      restored: false, modifiedAt: 1, checksum: "", checksumAlgo: "none", status: "quarantined", updatedAt: 1,
+    }]);
+    const manifestBefore = new TextDecoder().decode(quarantine.file("manifest.json")._file.bytes);
+    const childrenBefore = [...quarantine.children.keys()].sort().join(",");
+    const loaded = await loadQuarantineForScan(rootHandle, "local");
+    const manifestAfter = new TextDecoder().decode(quarantine.file("manifest.json")._file.bytes);
+    check("scan with previously writable handles still writes nothing", loaded.length === 1
+      && manifestAfter === manifestBefore
+      && [...quarantine.children.keys()].sort().join(",") === childrenBefore, { loaded, manifestBefore, manifestAfter });
+    const direct = await readQuarantineReadOnly(rootHandle);
+    check("read-only quarantine reader returns records without reconcile writes", direct.length === 1
+      && new TextDecoder().decode(quarantine.file("manifest.json")._file.bytes) === manifestBefore, direct);
   }
 
   // ---------- 启动对账 ----------

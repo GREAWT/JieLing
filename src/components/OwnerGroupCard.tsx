@@ -32,6 +32,8 @@ export interface OwnerGroupCardProps {
   activeEntryId?: string | null;
   defaultOpen?: boolean;
   selectionDisabled?: boolean;
+  /** 搜索命中但被吸收的内部文件路径，用于说明为什么这张卡出现在结果里 */
+  searchMatches?: readonly string[];
   style?: CSSProperties;
 }
 
@@ -47,6 +49,7 @@ export function OwnerGroupCard({
   activeEntryId = null,
   defaultOpen = true,
   selectionDisabled = false,
+  searchMatches = [],
   style,
 }: OwnerGroupCardProps) {
   const [open, setOpen] = useState(defaultOpen);
@@ -116,6 +119,16 @@ export function OwnerGroupCard({
                     </span>
                   ))}
                 </span>
+                {searchMatches.length > 0 && (
+                  <span
+                    className="dc-tone-info dc-tone-text mt-1 block max-w-full truncate text-xs"
+                    title={searchMatches.join("\n")}
+                  >
+                    内部命中：
+                    {searchMatches.slice(0, 3).map((path) => path.split(/[\\/]/).filter(Boolean).pop() ?? path).join("、")}
+                    {searchMatches.length > 3 ? ` 等 ${searchMatches.length} 项` : ""}
+                  </span>
+                )}
               </span>
               <ChevronDown
                 aria-hidden

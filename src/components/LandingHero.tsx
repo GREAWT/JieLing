@@ -34,6 +34,7 @@ export interface LandingHeroProps {
   progress?: { created: number; total: number } | null;
   onPickLocal: () => void;
   localSupported?: boolean;
+  picking?: boolean;
 }
 
 const FLOW = [
@@ -91,6 +92,7 @@ export function LandingHero({
   progress = null,
   onPickLocal,
   localSupported = true,
+  picking = false,
 }: LandingHeroProps) {
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -168,17 +170,21 @@ export function LandingHero({
               size="lg"
               variant="outline"
               onClick={onPickLocal}
-              disabled={generating}
+              disabled={generating || picking}
               title={localSupported ? undefined : "当前环境不支持读取真实目录，请使用桌面版 Chrome / Edge"}
             >
-              <FolderSearch aria-hidden />
-              扫描真实文件夹
+              {picking ? <Spinner /> : <FolderSearch aria-hidden />}
+              {picking ? "等待选择目录…" : "扫描真实文件夹"}
             </Button>
             <p className="dc-tone-safe dc-tone-text flex items-center gap-1.5 text-xs font-medium">
               <ShieldCheck aria-hidden className="size-4 shrink-0" />
               只扫描，不修改；确认后才会隔离
             </p>
           </div>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            真实目录入口受浏览器原生选择器限制：部分系统目录、包含系统文件的目录或敏感位置可能被直接拒绝；
+            AppData、Program Files、Recovery 等不保证可以选择。洁灵不会绕过该限制。
+          </p>
 
           {generating && (
             <div className="grid gap-1.5" role="status">

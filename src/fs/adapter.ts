@@ -45,7 +45,7 @@ function isTypeMismatchError(err: unknown): boolean {
 const DOM_EXCEPTION_TEXT: Record<string, string> = {
   AbortError: "操作已取消：没有选择任何目录，或中途关闭了选择窗口。",
   SecurityError: "浏览器拦截了这次目录选择：它必须由一次真实点击直接触发，且页面处于 https 或 localhost。请再点一次按钮重试。",
-  NotAllowedError: "没有获得该目录的读写权限：请在弹窗中允许访问，或换一个目录重试。",
+  NotAllowedError: "没有获得该目录的访问权限：请在浏览器弹窗中允许读取，或换一个你有权限的目录重试。",
   NoModificationAllowedError: "没有修改该目录的权限：请换一个你有读写权限的目录。",
   NotFoundError: "目标目录已不存在或已被移动，请重新选择。",
   TypeMismatchError: "所选对象不是文件夹，请重新选择一个目录。",
@@ -86,7 +86,8 @@ export async function openLocalRoot(): Promise<FileSystemDirectoryHandle> {
     throw new Error("当前浏览器不支持 File System Access API（showDirectoryPicker），请使用 Chrome / Edge");
   }
   // 必须由真实用户手势触发，否则抛 SecurityError（已实测）
-  return window.showDirectoryPicker({ id: "dareclean-local", mode: "readwrite" });
+  // 扫描阶段只申请读取；写入授权在用户确认隔离/还原时再单独申请。
+  return window.showDirectoryPicker({ id: "dareclean-local", mode: "read" });
 }
 
 export async function ensureQuarantineDir(root: FileSystemDirectoryHandle): Promise<FileSystemDirectoryHandle> {

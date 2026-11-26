@@ -2,13 +2,18 @@ import { useCallback, useEffect, useState, type KeyboardEvent, type ReactNode, t
 import {
   Archive,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Copy,
   File,
   Folder,
+  FolderTree,
   Lock,
+  ScanSearch,
+  Search,
   Stethoscope,
+  TriangleAlert,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -28,7 +33,7 @@ import {
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 import { QUARANTINE_TTL_DAYS, REVIVAL_LABEL, REVIVAL_ORDER, VERDICT_ACTION, VERDICT_LABEL, confidenceLabel, rebuildMechanisms } from "@/src/core/constants";
-import type { JudgedEntry } from "@/src/core/types";
+import type { JudgedEntry, ScanEntry } from "@/src/core/types";
 import { entrySummary } from "./EntryRow";
 import {
   Meter,
@@ -39,6 +44,7 @@ import {
   SourceTag,
   VerdictBadge,
   VERDICT_TONE,
+  formatBytes,
   formatDateTime,
 } from "./shared";
 
@@ -56,6 +62,8 @@ export interface EntryDrawerProps {
   preview?: boolean;
   defaultAction?: string;
   returnFocusRef?: RefObject<HTMLButtonElement | null>;
+  allEntries?: readonly ScanEntry[];
+  onScanSubdirectory?: (entry: JudgedEntry) => void;
 }
 
 function purposeOf(entry: JudgedEntry): string {
@@ -111,6 +119,104 @@ function Step({
       <div className="text-sm leading-relaxed">{children}</div>
     </section>
   );
+}
+
+type TreeState = "complete" | "empty" | "partial";
+
+const TREE_STATE: Record<TreeState, { label: string; tone: string; hint: string }> = {
+  complete: {
+    label: "完成",
+    tone: "dc-tone-safe",
+    hint: "扫描完成，展开只是查看已读结果，不参与勾选、隔离或删除",
+  },
+  empty: {
+    label: "空结果",
+    tone: "dc-tone-locked",
+    hint: "扫描完成，但目录里没有可展开内容",
+  },
+  partial: {
+    label: "部分结果",
+    tone: "dc-tone-review",
+    hint: "部分结果：覆盖不完整，可用右侧按钮只读扫描",
+  },
+};
+
+function treeStateOf(root: ScanEntry): TreeState {
+  const complete = root.coverage.length === 1 && root.coverage[0] === "complete";
+  if (!complete) return "partial";
+  return root.childIds.length === 0 ? "empty" : "complete";
+}
+
+function ReadonlyTree({ root, entries }: { root: ScanEntry; entries: readonly ScanEntry[] }) {
+  const [open, setOpen] = useState<Set<string>>(() => new Set([root.id]));
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const MAX_CHILDREN = 300;
+
+  const toggle = (id: string) => {
+    setOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const renderNode = (node: ScanEntry, depth: number, path: Set<string>): ReactNode => {
+    const children = node.childIds.map((id) => byId.get(id)).filter((child): child is ScanEntry => Boolean(child));
+    const visible = children.slice(0, MAX_CHILDREN);
+    const protectedNode = typeof (node as JudgedEntry).locked === "boolean" && (node as JudgedEntry).locked;
+    const incomplete = node.kind === "directory" && !(node.coverage.length === 1 && node.coverage[0] === "complete");
+    const Icon = node.kind === "directory" ? Folder : File;
+    const expanded = open.has(node.id);
+    return (
+      <li key={node.id}>
+        <div
+          className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted/40"
+          style={{ paddingLeft: `${8 + depth * 14}px` }}
+        >
+          {node.kind === "directory" && children.length > 0 ? (
+            <button
+              type="button"
+              className="grid size-5 shrink-0 place-content-center rounded text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+              aria-label={`${expanded ? "收起" : "展开"} ${node.name}`}
+              onClick={() => toggle(node.id)}
+            >
+              <ChevronRight aria-hidden className={cn("size-3.5 transition-transform", expanded && "rotate-90")} />
+            </button>
+          ) : (
+            <span className="size-5 shrink-0" />
+          )}
+          <Icon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className={cn("min-w-0 flex-1 truncate text-xs", protectedNode && "dc-tone-locked dc-tone-text")}>
+            {node.name}
+          </span>
+          {node.kind === "directory" && incomplete && <span className="dc-tone-review dc-tone-text text-[10px]">覆盖不完整</span>}
+          {protectedNode && <Lock aria-label="默认保护" className="size-3 shrink-0 text-muted-foreground" />}
+          <span className="dc-num shrink-0 text-[10px] text-muted-foreground">{formatBytes(node.size)}</span>
+        </div>
+        {expanded && children.length > 0 && (
+          <ul>
+            {visible.map((child) => path.has(child.id) ? null : renderNode(child, depth + 1, new Set([...path, child.id])))}
+            {children.length > visible.length && (
+              <li className="px-4 py-1 text-[10px] text-muted-foreground">其余 {children.length - visible.length} 项为避免卡顿未展开</li>
+            )}
+          </ul>
+        )}
+      </li>
+    );
+  };
+
+  const children = root.childIds.map((id) => byId.get(id)).filter((child): child is ScanEntry => Boolean(child));
+  if (root.kind !== "directory") return null;
+  if (children.length === 0) {
+    return (
+      <p className="rounded-md border border-hairline px-3 py-2 text-xs text-muted-foreground">
+        {root.coverage.length === 1 && root.coverage[0] === "complete"
+          ? "此目录为空，没有可展开内容。"
+          : "此目录的子树未被完整扫描；可用下方“只读扫描此目录”单独递归读取。"}
+      </p>
+    );
+  }
+  return <ul data-readonly-tree className="max-h-72 overflow-auto rounded-md border border-hairline py-1">{renderNode(root, 0, new Set([root.id]))}</ul>;
 }
 
 function PreviewDrawerBody({ entry, defaultAction }: { entry: JudgedEntry; defaultAction?: string }) {
@@ -201,10 +307,14 @@ function DrawerBody({
   onNavigate,
   position,
   busy,
+  allEntries,
+  onScanSubdirectory,
 }: Omit<EntryDrawerProps, "open" | "onOpenChange"> & { entry: JudgedEntry }) {
   const hit = entry.hit;
   const locked = entry.locked || entry.verdict === "keep_locked";
   const KindIcon = entry.kind === "directory" ? Folder : File;
+  const treeState = entry.kind === "directory" ? treeStateOf(entry) : null;
+  const treeMeta = treeState ? TREE_STATE[treeState] : null;
   const revival = hit?.revival ?? [];
   const orderedRevival = rebuildMechanisms(revival).sort(
     (a, b) => REVIVAL_ORDER.indexOf(a) - REVIVAL_ORDER.indexOf(b),
@@ -301,6 +411,48 @@ function DrawerBody({
                 </Button>
               </div>
             </div>
+            {entry.kind === "directory" && allEntries && (
+              <div className="grid gap-2 border-t border-hairline pt-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="dc-label flex items-center gap-1.5">
+                    <FolderTree aria-hidden className="size-3.5" />
+                    只读目录内容
+                  </p>
+                  {treeState && treeMeta && (
+                    <span
+                      data-readonly-tree-state={treeState}
+                      className={cn(
+                        "dc-tone-bg dc-tone-text dc-tone-border inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs",
+                        treeMeta.tone,
+                      )}
+                    >
+                      {treeState === "complete"
+                        ? <Check aria-hidden className="size-3" />
+                        : treeState === "empty"
+                          ? <Search aria-hidden className="size-3" />
+                          : <TriangleAlert aria-hidden className="size-3" />}
+                      {treeMeta.label}
+                    </span>
+                  )}
+                  <span className="text-xs text-muted-foreground">
+                    {treeMeta?.hint ?? "可逐层展开，不参与勾选、隔离或删除"}
+                  </span>
+                  {onScanSubdirectory && (
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      className="ml-auto"
+                      disabled={busy}
+                      onClick={() => onScanSubdirectory(entry)}
+                    >
+                      <ScanSearch aria-hidden />
+                      只读扫描此目录
+                    </Button>
+                  )}
+                </div>
+                <ReadonlyTree root={entry} entries={allEntries} />
+              </div>
+            )}
             {hit && (
               <div className="grid gap-1.5 border-t border-hairline pt-3">
                 <div className="flex items-center justify-between gap-2">

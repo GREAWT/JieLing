@@ -37,73 +37,89 @@ export function EntryRow({
   return (
     <li
       className="dc-row"
+      data-entry-id={entry.id}
       data-selected={selected || undefined}
       data-active={active || undefined}
     >
-      <div className="group/row flex items-start gap-3 px-3 py-2.5 sm:px-4">
-        {locked ? (
-          <Lock
-            aria-label="已锁定，不可选择"
-            className="mt-1 size-4 shrink-0 text-muted-foreground"
-          />
-        ) : (
-          <Checkbox
-            className="mt-1"
-            checked={selected}
-            onCheckedChange={(value) => onToggle(entry, value === true)}
-            aria-label={`选择 ${entry.name}`}
-          />
+      <div
+        role="button"
+        tabIndex={0}
+        aria-label={`查看 ${entry.name}：这是什么、能不能删、删了会怎样`}
+        onClick={() => onOpen(entry)}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) return;
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onOpen(entry);
+          }
+        }}
+        className={cn(
+          "group/row flex cursor-pointer items-start gap-3 rounded-md px-3 py-2.5 outline-none transition-colors sm:px-4",
+          "hover:bg-muted/45 focus-visible:ring-[3px] focus-visible:ring-ring/50",
+          active && "bg-muted/55",
         )}
-
-        {/* 整行是一个按钮：点 anywhere 打开右侧/底部抽屉，不再有两套重复的展开详情 */}
-        <button
-          type="button"
-          onClick={() => onOpen(entry)}
-          aria-label={`查看 ${entry.name}：这是什么、能不能删、删了会怎样`}
-          className="dc-press flex min-w-0 flex-1 items-start gap-3 rounded-md text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+      >
+        <span
+          data-row-action
+          className="mt-1 flex size-4 shrink-0 items-center justify-center"
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
         >
-          <span className="min-w-0 flex-1">
-            <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <KindIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-              <span className="max-w-full truncate font-medium">{entry.name}</span>
-              <VerdictBadge verdict={entry.verdict} compact />
-              {entry.hit && entry.hit.revival.length > 0 && (
-                <RevivalBadge mechanisms={entry.hit.revival} interactive={false} />
-              )}
-              {entry.hit && <EntrySemanticBadges mechanisms={entry.hit.revival} rebuildable={entry.hit.rebuildable} />}
-              <SourceTag source={entry.source} />
-            </span>
-            <span className="dc-path mt-0.5 block truncate text-muted-foreground">
-              {entry.path}
-            </span>
-            <span className="mt-1 line-clamp-1 block text-xs text-muted-foreground">
-              <span className="text-foreground">
-                身份 {entry.hit?.owner ?? "未识别"}（{OWNER_KIND_LABEL[entry.hit?.ownerKind ?? "unknown"]}）
-              </span>
-              {" · "}
-              {entrySummary(entry)}
-            </span>
-          </span>
-
-          <span className="flex shrink-0 flex-col items-end gap-1.5 pt-0.5">
-            {emptyDir ? (
-              <span className="dc-label whitespace-nowrap">空目录</span>
-            ) : (
-              <SizeValue bytes={entry.size} />
-            )}
-            <span className="max-w-36 truncate text-xs text-muted-foreground" title={VERDICT_ACTION[entry.verdict]}>
-              {VERDICT_ACTION[entry.verdict]}
-            </span>
-            <ChevronRight
-              aria-hidden
-              className={cn(
-                "size-4 text-muted-foreground transition-transform duration-200",
-                "group-hover/row:translate-x-0.5 group-hover/row:text-primary",
-                active && "translate-x-0.5 text-primary",
-              )}
+          {locked ? (
+            <Lock
+              aria-label="已锁定，不可选择"
+              className="size-4 text-muted-foreground"
             />
+          ) : (
+            <Checkbox
+              checked={selected}
+              onCheckedChange={(value) => onToggle(entry, value === true)}
+              aria-label={`选择 ${entry.name}`}
+            />
+          )}
+        </span>
+
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <KindIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+            <span className="max-w-full truncate font-medium">{entry.name}</span>
+            <VerdictBadge verdict={entry.verdict} compact />
+            {entry.hit && entry.hit.revival.length > 0 && (
+              <RevivalBadge mechanisms={entry.hit.revival} interactive={false} />
+            )}
+            {entry.hit && <EntrySemanticBadges mechanisms={entry.hit.revival} rebuildable={entry.hit.rebuildable} />}
+            <SourceTag source={entry.source} />
           </span>
-        </button>
+          <span className="dc-path mt-0.5 block truncate text-muted-foreground">
+            {entry.path}
+          </span>
+          <span className="mt-1 line-clamp-1 block text-xs text-muted-foreground">
+            <span className="text-foreground">
+              身份 {entry.hit?.owner ?? "未识别"}（{OWNER_KIND_LABEL[entry.hit?.ownerKind ?? "unknown"]}）
+            </span>
+            {" · "}
+            {entrySummary(entry)}
+          </span>
+        </span>
+
+        <span className="flex shrink-0 flex-col items-end gap-1.5 pt-0.5">
+          {emptyDir ? (
+            <span className="dc-label whitespace-nowrap">空目录</span>
+          ) : (
+            <SizeValue bytes={entry.size} />
+          )}
+          <span className="max-w-36 truncate text-xs text-muted-foreground" title={VERDICT_ACTION[entry.verdict]}>
+            {VERDICT_ACTION[entry.verdict]}
+          </span>
+          <ChevronRight
+            aria-hidden
+            className={cn(
+              "size-4 text-muted-foreground transition-transform duration-200",
+              "group-hover/row:translate-x-0.5 group-hover/row:text-primary",
+              active && "translate-x-0.5 text-primary",
+            )}
+          />
+        </span>
       </div>
     </li>
   );

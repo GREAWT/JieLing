@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { FlaskConical, HardDrive, Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { PRODUCT_NAME, PRODUCT_TAGLINE } from "@/src/core/constants";
@@ -14,6 +15,7 @@ export interface AppHeaderProps {
   localSupported?: boolean;
   onUseSandbox?: () => void;
   onPickLocal?: () => void;
+  localPicking?: boolean;
 }
 
 const SOURCE_META = {
@@ -27,6 +29,7 @@ export function AppHeader({
   localSupported = true,
   onUseSandbox,
   onPickLocal,
+  localPicking = false,
 }: AppHeaderProps) {
   const { theme, toggle } = useTheme();
   const [scrolled, setScrolled] = useState(false);
@@ -116,17 +119,19 @@ export function AppHeader({
                     size="sm"
                     aria-pressed={source === "local"}
                     onClick={onPickLocal}
-                    disabled={!onPickLocal}
+                    disabled={!onPickLocal || localPicking}
                     className="px-2 sm:px-3"
-                    title={localSupported ? undefined : "当前浏览器不支持读取真实目录，请使用桌面版 Chrome / Edge"}
+                    title={localSupported
+                      ? (localPicking ? "请在系统窗口中选择文件夹" : "系统目录或敏感位置可能被浏览器原生选择器拒绝")
+                      : "当前浏览器不支持读取真实目录，请使用桌面版 Chrome / Edge"}
                   >
-                    <HardDrive aria-hidden />
-                    <span className="hidden sm:inline">真实目录</span>
-                    <span className="sr-only sm:hidden">选择真实目录</span>
+                    {localPicking ? <Spinner aria-hidden className="size-4" /> : <HardDrive aria-hidden />}
+                    <span className="hidden sm:inline">{localPicking ? "选择中…" : "真实目录"}</span>
+                    <span className="sr-only sm:hidden">{localPicking ? "正在等待选择目录" : "选择真实目录"}</span>
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
-                  {localSupported ? "重新选择本地文件夹" : "需要桌面版 Chrome / Edge"}
+                  {localSupported ? "重新选择本地文件夹；部分系统目录可能被浏览器直接拒绝" : "需要桌面版 Chrome / Edge"}
                 </TooltipContent>
               </Tooltip>
             </nav>

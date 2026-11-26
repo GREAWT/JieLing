@@ -26,7 +26,29 @@ function markGlobalCoverage(entries: ScanEntry[], reasons: ScanCoverage[]): void
 }
 
 function finalizeProgress(progress: ScanProgress, entries: ScanEntry[]): ScanProgress {
-  return { ...progress, coverage: summarizeCoverage(entries) };
+  const coverage = summarizeCoverage(entries);
+  const rootReasons = (progress.rootCoverage ?? []).filter((reason) => reason !== "complete");
+  if (rootReasons.length > 0) {
+    coverage.incompleteDirs += 1;
+    for (const reason of rootReasons) {
+      if (reason === "depth_limited") coverage.depthLimited += 1;
+      else if (reason === "entry_limited") coverage.entryLimited += 1;
+      else if (reason === "skipped_children") coverage.skippedChildren += 1;
+      else if (reason === "permission_partial") coverage.permissionPartial += 1;
+      else if (reason === "cancelled") coverage.cancelled += 1;
+    }
+  }
+  return {
+    ...progress,
+    coverage: {
+      incompleteDirs: coverage.incompleteDirs,
+      depth_limited: coverage.depthLimited,
+      entry_limited: coverage.entryLimited,
+      skipped_children: coverage.skippedChildren,
+      permission_partial: coverage.permissionPartial,
+      cancelled: coverage.cancelled,
+    },
+  };
 }
 
 export function createScanner(): Scanner {

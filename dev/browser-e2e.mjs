@@ -141,13 +141,16 @@ class Cdp {
     throw new Error(`等待页面状态超时：${label}${tail ? `；页面尾部：${tail}` : ""}`);
   }
   async mouseClick(expression, label) {
+    await this.mouseClickAt(expression, label, 0.5, 0.5);
+  }
+  async mouseClickAt(expression, label, fractionX, fractionY) {
     const point = await this.evaluate(`(() => {
       const el = ${expression};
       if (!el) return null;
       el.scrollIntoView({ block: 'center', inline: 'center' });
       const rect = el.getBoundingClientRect();
       if (rect.width < 1 || rect.height < 1) return null;
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      return { x: rect.left + rect.width * ${fractionX}, y: rect.top + rect.height * ${fractionY} };
     })()`);
     if (!point) throw new Error(`找不到可点击元素：${label}`);
     await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
@@ -202,6 +205,10 @@ async function main() {
     cdp = new Cdp(ws);
     await cdp.send("Runtime.enable");
     await cdp.send("Page.enable");
+    await cdp.send("Browser.grantPermissions", {
+      origin: new URL(BASE_URL).origin,
+      permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+    });
 
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       width: 1440, height: 900, deviceScaleFactor: 1, mobile: false,
@@ -211,39 +218,167 @@ async function main() {
       "document.body.textContent.includes('脱敏后的目录名称、层级、扩展名和统计信息，不发送文件内容')",
       "首页 AI 数据边界文案",
     );
+    await cdp.waitFor("document.body.textContent.includes('AppData、Program Files、Recovery 等不保证可以选择')",
+      "真实目录原生选择器能力边界");
     await cdp.evaluate(`(() => {
       const button = [...document.querySelectorAll('button')].find((item) => item.textContent.includes('进入演示模式'));
       if (!button) throw new Error('找不到进入演示模式按钮');
       button.click();
       return true;
     })()`);
-    await cdp.waitFor("document.body.textContent.includes('扫描完成')", "演示数据扫描完成", 120_000);
+    await cdp.waitFor(`(() => {
+      const status = document.querySelector('[data-scan-state="complete"]');
+      return Boolean(status && status.textContent.trim() === '完成');
+    })()`, "演示数据扫描完成", 120_000);
     await cdp.waitFor("document.body.textContent.includes('Node.js')", "审核台出现 Node.js 分组");
+    await cdp.waitFor(`(() => {
+      const text = document.body.textContent;
+      return text.includes('演示模式固定本地规则')
+        && text.includes('仅本地规则')
+        && !text.includes('云端辅助判定已开启');
+    })()`, "演示模式明确显示仅本地规则");
+    await cdp.waitFor(`(() => {
+      const cards = [...document.querySelectorAll('[data-card-key]')];
+      return cards.length === 4 && cards.every((card) => !card.getAttribute('data-card-state'));
+    })()`, "四张统计卡默认不显示扫描状态");
+    const resetStyle = await cdp.evaluate(`(() => {
+      const button = document.querySelector('[data-sandbox-reset="toolbar"]');
+      if (!button) return null;
+      const style = getComputedStyle(button);
+      return {
+        background: style.backgroundColor,
+        border: style.borderTopColor,
+        color: style.color,
+        className: button.className,
+      };
+    })()`);
+    if (!resetStyle || resetStyle.background === 'rgba(0, 0, 0, 0)' || resetStyle.background === 'transparent'
+      || !resetStyle.className.includes('dc-tone-info')) {
+      throw new Error(`重置演示数据按钮不够醒目：${JSON.stringify(resetStyle)}`);
+    }
+
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('input[aria-label="搜索条目"]');
+      if (!input) throw new Error('找不到审核台搜索框');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, 'lodash');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`);
+    await cdp.waitFor(`document.body.textContent.includes('搜索覆盖全部')
+      && Boolean(document.querySelector('[aria-label="全选 Node.js 的可清理项"]'))`, "搜索命内部文件并落到审核卡");
+    const searchScope = await cdp.evaluate(`(() => {
+      const text = document.querySelector('[data-region="review-board"]')?.textContent ?? '';
+      return {
+        hasScope: text.includes('搜索覆盖全部'),
+        hasHint: text.includes('内部文件命中归入最近的审核卡'),
+        hasHiddenMatch: text.includes('内部命中：'),
+      };
+    })()`);
+    if (!searchScope.hasScope || !searchScope.hasHint || !searchScope.hasHiddenMatch) {
+      throw new Error(`搜索范围提示缺失：${JSON.stringify(searchScope)}`);
+    }
+    const searchCards = await cdp.evaluate(`(() => {
+      const cards = [...document.querySelectorAll('[data-card-key]')];
+      const total = document.querySelector('[data-card-key="total"]');
+      return {
+        cards: cards.length,
+        withState: cards.filter((card) => Boolean(card.getAttribute('data-card-state'))).length,
+        total: total?.getAttribute('data-card-state'),
+        states: cards.map((card) => card.getAttribute('data-card-state')),
+      };
+    })()`);
+    if (searchCards.cards !== 4 || searchCards.withState !== 4 || searchCards.total !== "filtering"
+      || searchCards.states.some((state) => state !== "filtering" && state !== "no-match")
+      || !searchCards.states.includes("filtering") || !searchCards.states.includes("no-match")) {
+      throw new Error(`搜索时卡片状态错误：${JSON.stringify(searchCards)}`);
+    }
+    await cdp.evaluate(`(() => {
+      const clear = document.querySelector('button[aria-label="清除搜索"]');
+      if (!clear) throw new Error('找不到清除搜索按钮');
+      clear.click();
+      return true;
+    })()`);
+    await cdp.waitFor("document.body.textContent.includes('搜索覆盖全部') === false", "清除搜索恢复完整审核台");
+
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('input[aria-label="搜索条目"]');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, 'zzzz-no-such-demo-entry');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`);
+    await cdp.waitFor(`(() => {
+      const cards = [...document.querySelectorAll('[data-card-key]')];
+      const total = document.querySelector('[data-card-key="total"]');
+      const categories = ['safe', 'review', 'locked']
+        .map((key) => document.querySelector('[data-card-key="' + key + '"]'));
+      return cards.length === 4
+        && total?.getAttribute('data-card-state') === 'empty'
+        && categories.every((card) => card?.getAttribute('data-card-state') === 'no-match')
+        && document.body.textContent.includes('没有匹配的条目');
+    })()`, "搜索无匹配时显示空结果与无匹配");
+    await cdp.evaluate(`(() => {
+      const clear = document.querySelector('button[aria-label="清除搜索"]');
+      if (!clear) throw new Error('找不到清除搜索按钮');
+      clear.click();
+      return true;
+    })()`);
+    await cdp.waitFor(`(() => {
+      const cards = [...document.querySelectorAll('[data-card-key]')];
+      return cards.length === 4 && cards.every((card) => !card.getAttribute('data-card-state'));
+    })()`, "清除无匹配搜索后卡片状态复位");
 
     await cdp.mouseClick(
       `[...document.querySelectorAll('button')].find((item) => item.getAttribute('aria-pressed') === 'false'
         && item.textContent.includes('已保护项目'))`,
       "已保护项目筛选卡",
     );
+    await cdp.waitFor(`(() => {
+      const state = (key) => document.querySelector('[data-card-key="' + key + '"]')?.getAttribute('data-card-state');
+      return state('locked') === 'filtering'
+        && state('total') === null
+        && state('safe') === null
+        && state('review') === null;
+    })()`, "点筛选卡后只有该卡显示筛选中");
     const protectedTarget = await cdp.evaluate(`(() => {
       const lockIcons = [...document.querySelectorAll('svg[aria-label="建议保留，已锁定"]')];
+      let fallback = null;
       for (const icon of lockIcons) {
         const section = icon.closest('section');
-        const button = section?.querySelector('button[aria-label^="查看 "]');
+        const button = section?.querySelector('[role="button"][aria-label^="查看 "]');
         if (!button) continue;
         const label = button.getAttribute('aria-label');
         const name = label.slice(3, label.indexOf('：'));
-        button.setAttribute('data-dc-test-target', 'protected');
-        return name;
+        if (!fallback) fallback = { button, name };
+        if (button.querySelector('.lucide-folder')) {
+          button.setAttribute('data-dc-test-target', 'protected');
+          return { name, directory: true };
+        }
+      }
+      if (fallback) {
+        fallback.button.setAttribute('data-dc-test-target', 'protected');
+        return { name: fallback.name, directory: false };
       }
       return null;
     })()`);
     if (!protectedTarget) throw new Error("默认保护筛选下没有找到纯受保护分组");
-    await cdp.mouseClick("document.querySelector('[data-dc-test-target=\"protected\"]')", "纯受保护条目");
+    if (!protectedTarget.directory) throw new Error("默认保护分组中没有可验证只读展开的目录");
+    await cdp.mouseClickAt("document.querySelector('[data-dc-test-target=\"protected\"]')", "受保护条目整行", 0.65, 0.5);
     await cdp.waitFor("Boolean(document.querySelector('[data-region=\"entry-drawer\"] h2'))", "受保护条目详情抽屉");
     const openedName = await cdp.evaluate("document.querySelector('[data-region=\"entry-drawer\"] h2').textContent");
-    if (openedName !== protectedTarget) {
-      throw new Error(`受保护条目抽屉错位：点击「${protectedTarget}」，打开「${openedName}」`);
+    if (openedName !== protectedTarget.name) {
+      throw new Error(`受保护条目抽屉错位：点击「${protectedTarget.name}」，打开「${openedName}」`);
+    }
+    await cdp.waitFor("document.body.textContent.includes('只读目录内容')", "受保护目录只读展开");
+    const treeState = await cdp.evaluate(`(() => {
+      const badge = document.querySelector('[data-readonly-tree-state]');
+      if (!badge) return null;
+      return { state: badge.getAttribute('data-readonly-tree-state'), text: badge.textContent.trim() };
+    })()`);
+    const treeLabels = { complete: '完成', empty: '空结果', partial: '部分结果' };
+    if (!treeState || !treeLabels[treeState.state] || !treeState.text.includes(treeLabels[treeState.state])) {
+      throw new Error(`目录展开状态不明确：${JSON.stringify(treeState)}`);
     }
     await cdp.evaluate(`(() => {
       const close = document.querySelector('button[aria-label="关闭详情抽屉"]');
@@ -260,6 +395,38 @@ async function main() {
     })()`);
     await cdp.waitFor(`(() => [...document.querySelectorAll('button')].some((item) =>
       item.getAttribute('aria-label') === '全选 Node.js 的可清理项'))()`, "恢复完整审核台");
+
+    await cdp.mouseClick(
+      `document.querySelector('[aria-label="选择 node_modules"]')`,
+      "条目行内复选框",
+    );
+    await delay(250);
+    if (await cdp.evaluate("Boolean(document.querySelector('[data-region=\"entry-drawer\"]'))")) {
+      throw new Error("点击复选框不应打开条目抽屉");
+    }
+    await cdp.waitFor("document.body.textContent.includes('已选')", "复选框选择生效");
+    await cdp.mouseClick(
+      `document.querySelector('[aria-label="选择 node_modules"]')`,
+      "取消行内复选框",
+    );
+    await cdp.waitFor("document.body.textContent.includes('已选') === false", "取消复选框选择");
+
+    await cdp.mouseClickAt(
+      `document.querySelector('[aria-label="查看 node_modules：这是什么、能不能删、删了会怎样"]')`,
+      "node_modules 整行右侧热区",
+      0.9,
+      0.5,
+    );
+    await cdp.waitFor("document.body.textContent.includes('只读目录内容')", "目录只读展开区");
+    await cdp.waitFor("Boolean(document.querySelector('[data-readonly-tree]'))", "只读树容器");
+    await cdp.waitFor("document.querySelector('[data-readonly-tree]').textContent.includes('.package-lock.json')", "只读树显示已扫描子项");
+    await cdp.evaluate(`(() => {
+      const close = document.querySelector('button[aria-label="关闭详情抽屉"]');
+      if (!close) throw new Error('找不到详情抽屉关闭按钮');
+      close.click();
+      return true;
+    })()`);
+    await cdp.waitFor("document.querySelector('[data-region=\"entry-drawer\"]') === null", "关闭只读树抽屉");
 
     await cdp.mouseClick(
       "document.querySelector('[aria-label=\"全选 Node.js 的可清理项\"]')",
@@ -328,6 +495,25 @@ async function main() {
       }
     })()`, "原位置 node_modules 已移走", 60_000);
     await cdp.waitFor("document.body.textContent.includes('需要恢复检查') === false", "没有误报恢复检查");
+    await cdp.waitFor(`(() => {
+      const active = document.querySelector('[role="tab"][data-state="active"]');
+      return Boolean(active && active.textContent.includes('隔离区'));
+    })()`, "隔离完成后切到隔离区", 30_000);
+
+    await delay(300);
+    await cdp.mouseClick(
+      `[...document.querySelectorAll('[role=tab]')].find((item) => item.textContent.includes('分类审核台'))`,
+      "返回分类审核台检查演示隔离说明",
+    );
+    await cdp.waitFor(`(() => {
+      const active = document.querySelector('[role="tab"][data-state="active"]');
+      return Boolean(active && active.textContent.includes('分类审核台'));
+    })()`, "返回分类审核台");
+    await cdp.waitFor(`(() => {
+      const note = document.querySelector('[data-region="sandbox-quarantine-note"]');
+      return Boolean(note && note.textContent.includes('不会自动移走样本')
+        && note.textContent.includes('查看隔离区'));
+    })()`, "演示模式说明已有隔离项而非自动清理");
 
     await cdp.waitFor(`(() => {
       const tab = [...document.querySelectorAll('[role=tab]')].find((item) => item.textContent.includes('隔离区'));
@@ -393,6 +579,136 @@ async function main() {
     })()`);
     await cdp.waitFor("document.querySelector('[role=\"alertdialog\"]') === null", "关闭审计记录确认框");
     await delay(250);
+
+    await cdp.mouseClick(
+      `[...document.querySelectorAll('[role=tab]')].find((item) => item.textContent.includes('分类审核台'))`,
+      "清空测试前返回分类审核台",
+    );
+    await cdp.waitFor(`(() => [...document.querySelectorAll('button')].some((item) =>
+      item.getAttribute('aria-label') === '全选 Next.js 的可清理项'))()`, "Next.js 分组可用");
+    await cdp.mouseClick(
+      `document.querySelector('[aria-label="全选 Next.js 的可清理项"]')`,
+      "选择 Next.js 小组用于清空测试",
+    );
+    await cdp.waitFor(`(() => {
+      const button = [...document.querySelectorAll('button')].find((item) => item.textContent.trim() === '移入隔离区' && !item.closest('[role=dialog]'));
+      return Boolean(button && !button.disabled);
+    })()`, "清空测试条目可隔离");
+    await cdp.evaluate(`(() => {
+      const button = [...document.querySelectorAll('button')].find((item) => item.textContent.trim() === '移入隔离区' && !item.closest('[role=dialog]'));
+      if (!button || button.disabled) throw new Error('Next.js 隔离按钮不可用');
+      button.click();
+      return true;
+    })()`);
+    await cdp.waitFor("document.body.textContent.includes('确认移入隔离区')", "清空测试隔离确认框");
+    await cdp.waitFor(`(() => {
+      const button = [...document.querySelectorAll('[role="dialog"] button')].find((item) => item.textContent.trim() === '确认移入隔离区');
+      return Boolean(button && !button.disabled);
+    })()`, "清空测试确认按钮可用");
+    await cdp.evaluate(`(() => {
+      const button = [...document.querySelectorAll('[role="dialog"] button')].find((item) => item.textContent.trim() === '确认移入隔离区');
+      if (!button || button.disabled) throw new Error('确认 Next.js 隔离按钮不可用');
+      button.click();
+      return true;
+    })()`);
+    await cdp.waitFor(`(() => {
+      const active = document.querySelector('[role="tab"][data-state="active"]');
+      return Boolean(active && active.textContent.includes('隔离区'));
+    })()`, "隔离完成后切到隔离区", 30_000);
+    await cdp.waitFor(`(() => {
+      const button = [...document.querySelectorAll('button')].find((item) => item.textContent.trim() === '清空隔离区');
+      return Boolean(button && !button.disabled);
+    })()`, "清空隔离区按钮可用", 30_000);
+    await cdp.evaluate(`(() => {
+      const button = [...document.querySelectorAll('button')].find((item) => item.textContent.trim() === '清空隔离区');
+      if (!button || button.disabled) throw new Error('清空隔离区按钮不可用');
+      button.click();
+      return true;
+    })()`);
+    await cdp.waitFor("document.body.textContent.includes('清空隔离区？')", "清空确认框");
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 390, height: 320, deviceScaleFactor: 1, mobile: false,
+    });
+    await delay(250);
+    const clearLayout = await cdp.evaluate(`(() => {
+      const dialog = document.querySelector('[data-clear-quarantine-dialog]');
+      const overlay = document.querySelector('[data-slot="alert-dialog-overlay"]');
+      const scroll = dialog?.querySelector('[data-clear-quarantine-scroll]');
+      const title = dialog?.querySelector('[data-slot="alert-dialog-title"]');
+      const action = [...(dialog?.querySelectorAll('button') ?? [])]
+        .find((button) => button.textContent.includes('全部彻底删除'));
+      if (!dialog || !overlay || !scroll || !title || !action) {
+        return { ok: false, reason: '弹窗、遮罩、滚动区、标题或操作按钮缺失' };
+      }
+      const rect = (node) => {
+        const r = node.getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom, left: r.left, right: r.right };
+      };
+      const dialogRect = rect(dialog);
+      const overlayRect = rect(overlay);
+      const titleRect = rect(title);
+      const actionRect = rect(action);
+      return {
+        ok: getComputedStyle(dialog).position === 'fixed'
+          && dialogRect.top >= 0 && dialogRect.bottom <= innerHeight
+          && titleRect.top >= 0 && titleRect.bottom <= innerHeight
+          && actionRect.top >= 0 && actionRect.bottom <= innerHeight
+          && overlayRect.top <= 0 && overlayRect.bottom >= innerHeight
+          && overlayRect.left <= 0 && overlayRect.right >= innerWidth
+          && getComputedStyle(scroll).overflowY === 'auto'
+          && scroll.clientHeight > 0
+          && dialog.textContent.includes('不可恢复操作'),
+        dialogRect, overlayRect, titleRect, actionRect,
+        viewport: { width: innerWidth, height: innerHeight },
+        warning: dialog.textContent.includes('不可恢复操作'),
+      };
+    })()`);
+    if (!clearLayout.ok) {
+      throw new Error(`清空隔离区警告框布局失败：${JSON.stringify(clearLayout)}`);
+    }
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 1440, height: 900, deviceScaleFactor: 1, mobile: false,
+    });
+    await delay(250);
+    await cdp.mouseClick(
+      `[...document.querySelectorAll('[role="alertdialog"] button')].find((item) => item.textContent.trim() === '取消')`,
+      "取消清空",
+    );
+    await cdp.waitFor("document.querySelector('[role=\"alertdialog\"]') === null", "清空取消后关闭");
+    await cdp.waitFor("document.body.textContent.includes('Projects/webapp/.next/cache')", "取消清空后记录保留");
+
+    await cdp.evaluate(`(() => {
+      const button = [...document.querySelectorAll('button')].find((item) => item.textContent.trim() === '清空隔离区');
+      if (!button || button.disabled) throw new Error('清空隔离区按钮不可用');
+      button.click();
+      return true;
+    })()`);
+    await cdp.waitFor("document.body.textContent.includes('清空隔离区？')", "再次清空确认框");
+    await cdp.mouseClick(
+      `[...document.querySelectorAll('[role="alertdialog"] [role="checkbox"], [role="alertdialog"] input[type="checkbox"]')][0]`,
+      "确认清空风险复选框",
+    );
+    await cdp.waitFor(`(() => {
+      const button = [...document.querySelectorAll('[role="alertdialog"] button')].find((item) => item.textContent.trim() === '全部彻底删除');
+      return Boolean(button && !button.disabled);
+    })()`, "清空确认按钮可用");
+    await cdp.evaluate(`(() => {
+      const button = [...document.querySelectorAll('[role="alertdialog"] button')].find((item) => item.textContent.trim() === '全部彻底删除');
+      if (!button || button.disabled) throw new Error('全部彻底删除按钮不可用');
+      button.click();
+      return true;
+    })()`);
+    await cdp.waitFor("document.body.textContent.includes('隔离区已清空')", "清空成功提示", 30_000);
+    await cdp.waitFor("document.body.textContent.includes('暂无隔离内容')", "清空后空状态", 30_000);
+    await cdp.waitFor("document.body.textContent.includes('正在清空') === false", "清空完成后按钮状态复位", 30_000);
+    await cdp.waitFor("document.querySelector('[data-clear-quarantine-dialog]') === null", "清空确认框关闭");
+    const repeatedClear = await cdp.evaluate(`(() => {
+      const button = [...document.querySelectorAll('button')].find((item) => item.textContent.includes('隔离区已清空'));
+      if (!button || !button.disabled) return false;
+      button.click();
+      return document.body.textContent.includes('清空隔离区？') === false;
+    })()`);
+    if (!repeatedClear) throw new Error("重复点击清空或按钮复位失败");
 
     await cdp.mouseClick(
       `[...document.querySelectorAll('[role=tab]')].find((item) => item.textContent.includes('判定规则'))`,
@@ -467,7 +783,11 @@ async function main() {
       button.click();
       return true;
     })()`);
-    await cdp.waitFor("document.body.textContent.includes('扫描完成')", "重启后扫描完成", 120_000);
+    await cdp.waitFor(`(() => {
+      const status = document.querySelector('[data-scan-state="complete"]');
+      return Boolean(status && status.textContent.trim() === '完成');
+    })()`, "重启后扫描完成", 120_000);
+    await cdp.waitFor("document.body.textContent.includes('含被跳过子目录')", "覆盖不足显示具体原因", 30_000);
     await cdp.mouseClick(
       `[...document.querySelectorAll('[role=tab]')].find((item) => item.textContent.includes('判定规则'))`,
       "重启后的判定规则标签",
@@ -486,9 +806,126 @@ async function main() {
     await cdp.waitFor("document.body.textContent.includes('我的规则') && document.body.textContent.includes('Persistent候选软件')",
       "我的规则界面显示新规则", 30_000);
 
+    await cdp.mouseClick(
+      `[...document.querySelectorAll('[role=tab]')].find((item) => item.textContent.includes('顽固软件诊断'))`,
+      "诊断标签",
+    );
+    await cdp.waitFor(`(() => {
+      const text = document.querySelector('[data-region="diagnose"]')?.textContent ?? '';
+      return text.includes('填写问题目录和症状')
+        && text.includes('生成并下载只读诊断脚本')
+        && text.includes('选择诊断结果文件')
+        && text.includes('查看本地建议')
+        && text.includes('按需请求云端辅助')
+        && !text.includes('3 · 选择诊断结果文件');
+    })()`, "诊断连续五步展示");
+
+    const pathInputs = await cdp.evaluate(`(() => ({
+      inputs: document.querySelectorAll('[data-path-input]').length,
+      copies: document.querySelectorAll('[data-path-input] button[aria-label="复制路径"]').length,
+      pastes: document.querySelectorAll('[data-path-input] button[aria-label="粘贴路径"]').length,
+      explainsBoundary: document.body.textContent.includes('不允许网页直接启动资源管理器'),
+    }))()`);
+    if (pathInputs.inputs !== 2 || pathInputs.copies !== 2 || pathInputs.pastes !== 0 || !pathInputs.explainsBoundary) {
+      throw new Error(`路径输入辅助按钮不符合预期：${JSON.stringify(pathInputs)}`);
+    }
+    const clipboardPath = 'C:\\Users\\Test\\AppData\\Local';
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector('#root-abs');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, ${JSON.stringify(clipboardPath)});
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`);
+    await cdp.waitFor(`document.querySelector('#root-abs').value === ${JSON.stringify(clipboardPath)}`, "路径输入生效");
+    await cdp.mouseClick(
+      `document.querySelector('[data-path-input="root-abs"] button[aria-label="复制路径"]')`,
+      "复制路径按钮",
+    );
+    await cdp.waitFor(
+      `Boolean(document.querySelector('[data-path-input="root-abs"] button[aria-label="路径已复制"]'))`,
+      "路径复制成功反馈",
+    );
+    const copiedPath = await cdp.evaluate("navigator.clipboard.readText()");
+    if (copiedPath !== clipboardPath) {
+      throw new Error(`路径复制内容不一致：${JSON.stringify(copiedPath)}`);
+    }
+    await cdp.waitFor("document.body.textContent.includes('高级选项：粘贴 JSON')", "诊断高级选项");
+    await cdp.mouseClick(
+      `[...document.querySelectorAll('button')].find((item) => item.textContent.includes('高级选项：粘贴 JSON'))`,
+      "展开高级 JSON",
+    );
+    await cdp.waitFor("Boolean(document.querySelector('#script-output'))", "JSON 文本框存在");
+    const longInvalid = `{ "bad": ${"x".repeat(1000)} }`;
+    await cdp.evaluate(`(() => {
+      const textarea = document.querySelector('#script-output');
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(textarea, ${JSON.stringify(longInvalid)});
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`);
+    await cdp.waitFor("Boolean(document.querySelector('[data-json-mask]')) && Boolean(document.querySelector('[data-json-expand]'))",
+      "高级 JSON 渐变遮罩与展开按钮");
+    const jsonLayout = await cdp.evaluate(`(() => {
+      const textarea = document.querySelector('#script-output');
+      const expand = document.querySelector('[data-json-expand]');
+      const mask = document.querySelector('[data-json-mask]');
+      textarea.scrollTop = textarea.scrollHeight;
+      const style = getComputedStyle(textarea);
+      return {
+        paddingBottom: parseFloat(style.paddingBottom),
+        scrollPaddingBottom: parseFloat(style.scrollPaddingBottom || '0'),
+        expandTop: expand.getBoundingClientRect().top,
+        textareaBottom: textarea.getBoundingClientRect().bottom,
+        maskHeight: mask.getBoundingClientRect().height,
+        atBottom: Math.abs(textarea.scrollTop + textarea.clientHeight - textarea.scrollHeight) <= 2,
+      };
+    })()`);
+    if (jsonLayout.paddingBottom < jsonLayout.maskHeight
+      || jsonLayout.scrollPaddingBottom < jsonLayout.maskHeight
+      || jsonLayout.expandTop < jsonLayout.textareaBottom
+      || !jsonLayout.atBottom) {
+      throw new Error(`JSON 底部遮挡检查失败：${JSON.stringify(jsonLayout)}`);
+    }
+    await cdp.mouseClick("document.querySelector('[data-json-expand]')", "展开全部 JSON");
+    await cdp.waitFor("document.querySelector('[data-json-mask]') === null", "展开后移除遮罩");
+    await cdp.mouseClick(
+      `[...document.querySelectorAll('button')].find((item) => item.textContent.trim() === '校验')`,
+      "校验无效 JSON",
+    );
+    await cdp.waitFor("document.body.textContent.includes('诊断 JSON 解析失败')", "无效 JSON 明确报错");
+    await cdp.mouseClick(
+      `[...document.querySelectorAll('button')].find((item) => item.textContent.trim() === '清空')`,
+      "清空 JSON",
+    );
+    await cdp.waitFor("document.querySelector('#script-output').value === ''", "清空 JSON 生效");
+    if (!await cdp.evaluate("document.body.textContent.includes('粘贴剪贴板') && document.body.textContent.includes('选择 JSON 文件')")) {
+      throw new Error("高级 JSON 缺少粘贴或文件选择按钮");
+    }
+    const clipboardFixture = '{"schema":"dareclean-diagnosis-v1","generatedAt":1}';
+    await cdp.send("Browser.grantPermissions", {
+      origin: new URL(BASE_URL).origin,
+      permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+    });
+    const clipboardWritten = await cdp.evaluate(
+      `navigator.clipboard.writeText(${JSON.stringify(clipboardFixture)}).then(() => true).catch(() => false)`,
+    );
+    if (!clipboardWritten) throw new Error("无法在测试浏览器写入剪贴板");
+    await cdp.mouseClick(
+      `[...document.querySelectorAll('button')].find((item) => item.textContent.includes('粘贴剪贴板'))`,
+      "读取剪贴板 JSON",
+    );
+    await cdp.waitFor("document.querySelector('#script-output').value.includes('dareclean-diagnosis-v1')", "剪贴板内容写入文本框");
+    await cdp.mouseClick(
+      `[...document.querySelectorAll('button')].find((item) => item.textContent.trim() === '校验')`,
+      "校验有效 JSON",
+    );
+    await cdp.waitFor("document.body.textContent.includes('JSON 有效')", "有效 JSON 校验成功");
+
     if (cdp.errors.length > 0) throw new Error(`浏览器控制台错误：${cdp.errors.join(" | ")}`);
     console.log("PASS  演示模式闭环：生成 → 扫描 → 受保护抽屉 → 勾选 → 隔离 → 原位消失 → 还原 → 审计记录");
     console.log("PASS  规则库持久化：AI候选重启后仍待审核 → 用户审核创建精确规则 → 我的规则可见");
+    console.log("PASS  交互修复：顶部扫描状态与卡片搜索状态分离（完成/筛选中/无匹配/空结果）、目录展开状态、深度搜索与内部命中、演示隔离说明、路径复制、清空隔离区警告框、JSON 遮罩/校验/剪贴板");
   } finally {
     try { await cdp?.send("Browser.close"); } catch { /* ignore */ }
     cdp?.close();

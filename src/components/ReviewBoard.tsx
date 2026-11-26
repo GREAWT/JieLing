@@ -25,7 +25,12 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { reviewDrawerEntries } from "@/src/app/review";
+import {
+  narrowReviewGroup,
+  orderReviewEntries,
+  reviewDrawerEntries,
+  searchReviewEntries,
+} from "@/src/app/review";
 import { SCAN_COVERAGE_LABEL, VERDICT_LABEL, rebuildMechanisms } from "@/src/core/constants";
 import type { JudgedEntry, OwnerGroup, ScanCoverage, ScanSource, Verdict } from "@/src/core/types";
 import { OwnerGroupCard } from "./OwnerGroupCard";
@@ -48,6 +53,8 @@ export interface ReviewBoardProps {
   stopped?: boolean;
   coverage?: Partial<Record<ScanCoverage, number>> & { incompleteDirs?: number };
   source?: ScanSource;
+  /** 全量扫描条目，用于把内部文件/中间目录的搜索命中映射回可见审核卡 */
+  scanEntries?: JudgedEntry[];
   onResetSandbox?: () => void;
   resetting?: boolean;
 }
@@ -83,6 +90,7 @@ export function ReviewBoard({
   stopped = false,
   coverage,
   source,
+  scanEntries,
   onResetSandbox,
   resetting = false,
 }: ReviewBoardProps) {
@@ -109,22 +117,23 @@ export function ReviewBoard({
     return { ...acc, revivalGroups };
   }, [groups]);
 
+  const hasQuery = query.trim().length > 0;
+  const search = useMemo(() => {
+    const scope = scanEntries ?? groups.flatMap((group) => group.entries);
+    return searchReviewEntries(groups, scope, query);
+  }, [groups, scanEntries, query]);
+  const searchScopeCount = scanEntries?.length
+    ?? groups.reduce((sum, group) => sum + group.entries.length, 0);
+
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
     const out: OwnerGroup[] = [];
     for (const g of groups) {
       let entries = g.entries;
       if (filter !== "all") entries = entries.filter((e) => e.verdict === filter);
       if (onlyRevival) entries = entries.filter((e) => rebuildMechanisms(e.hit?.revival ?? []).length > 0);
-      if (q) {
-        entries = entries.filter((e) =>
-          e.name.toLowerCase().includes(q)
-          || e.path.toLowerCase().includes(q)
-          || g.owner.toLowerCase().includes(q)
-          || (e.hit?.purpose ?? "").toLowerCase().includes(q));
-      }
+      if (hasQuery) entries = entries.filter((e) => search.ids.has(e.id));
       if (entries.length === 0) continue;
-      out.push({ ...g, entries, itemCount: entries.length });
+      out.push(narrowReviewGroup(g, entries));
     }
     out.sort((a, b) => {
       if (sort === "size") return b.totalSize - a.totalSize;
@@ -135,14 +144,34 @@ export function ReviewBoard({
       return b.maxPriority - a.maxPriority || b.totalSize - a.totalSize;
     });
     return out;
-  }, [groups, query, filter, onlyRevival, sort]);
+  }, [groups, hasQuery, search, filter, onlyRevival, sort]);
 
   const actionable = filtered.filter((g) => g.selectableCount > 0);
   const protectedGroups = filtered.filter((g) => g.selectableCount === 0);
-  const showProtectedInline = filter === "keep_locked";
-  const visibleEntries = useMemo(() => reviewDrawerEntries(filtered, filter), [filtered, filter]);
-  const filtering = filter !== "all" || onlyRevival || query.trim().length > 0;
+  // 搜索时把保护项直接展开，否则命中了也被折叠层藏起来，看起来像“搜不到”。
+  const showProtectedInline = filter === "keep_locked" || hasQuery;
+  const visibleEntries = useMemo(
+    () => showProtectedInline
+      ? filtered.flatMap((group) => orderReviewEntries(group.entries))
+      : reviewDrawerEntries(filtered, filter),
+    [filtered, filter, showProtectedInline],
+  );
+  const filtering = filter !== "all" || onlyRevival || hasQuery;
   const listedCount = visibleEntries.length;
+  const visibleCounts = useMemo(() => {
+    const counts: Record<Verdict, number> = { safe_delete: 0, needs_review: 0, keep_locked: 0 };
+    for (const group of filtered) {
+      for (const verdict of ["safe_delete", "needs_review", "keep_locked"] as Verdict[]) {
+        counts[verdict] += group.counts[verdict];
+      }
+    }
+    return counts;
+  }, [filtered]);
+  const totalMatches = visibleCounts.safe_delete + visibleCounts.needs_review + visibleCounts.keep_locked;
+  const matchesForGroup = (group: OwnerGroup): string[] => {
+    if (!hasQuery) return [];
+    return [...new Set(group.entries.flatMap((entry) => search.hiddenMatches.get(entry.id) ?? []))].slice(0, 6);
+  };
 
   if (loading) {
     return (
@@ -172,6 +201,7 @@ export function ReviewBoard({
     unit: string;
     sub: string;
     active: boolean;
+    verdict?: Verdict;
     onClick: () => void;
   }[] = [
     {
@@ -192,6 +222,7 @@ export function ReviewBoard({
       unit: "",
       sub: `${totals.safe_delete.count} 项 · ${VERDICT_LABEL.safe_delete}`,
       active: filter === "safe_delete",
+      verdict: "safe_delete",
       onClick: () => setFilter((f) => (f === "safe_delete" ? "all" : "safe_delete")),
     },
     {
@@ -202,6 +233,7 @@ export function ReviewBoard({
       unit: "项",
       sub: `${formatBytes(totals.needs_review.size)} · 看清理由再决定`,
       active: filter === "needs_review",
+      verdict: "needs_review",
       onClick: () => setFilter((f) => (f === "needs_review" ? "all" : "needs_review")),
     },
     {
@@ -212,20 +244,43 @@ export function ReviewBoard({
       unit: "项",
       sub: `${formatBytes(totals.keep_locked.size)} · 禁止勾选`,
       active: filter === "keep_locked",
+      verdict: "keep_locked",
       onClick: () => setFilter((f) => (f === "keep_locked" ? "all" : "keep_locked")),
     },
   ];
 
+  const statusOf = (tile: (typeof tiles)[number]): { state: string; label: string } | null => {
+    if (tile.key === "total") {
+      if (!hasQuery) return null;
+      return totalMatches > 0
+        ? { state: "filtering", label: "筛选中" }
+        : { state: "empty", label: "空结果" };
+    }
+    if (!tile.verdict) return null;
+    if (hasQuery) {
+      return visibleCounts[tile.verdict] > 0
+        ? { state: "filtering", label: "筛选中" }
+        : { state: "no-match", label: "无匹配" };
+    }
+    return filter === tile.verdict
+      ? { state: "filtering", label: "筛选中" }
+      : null;
+  };
+
   return (
     <div className="grid gap-4">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {tiles.map((t, i) => (
+        {tiles.map((t, i) => {
+          const status = statusOf(t);
+          return (
           <button
             key={t.key}
             type="button"
             onClick={t.onClick}
             aria-pressed={t.active}
             style={{ animationDelay: `${i * 45}ms` }}
+            data-card-key={t.key}
+            data-card-state={status?.state}
             className={cn(
               "dc-panel dc-brackets dc-lift dc-rail dc-rise dc-press cursor-pointer px-4 py-3 text-left outline-none",
               "focus-visible:ring-[3px] focus-visible:ring-ring/50",
@@ -236,7 +291,11 @@ export function ReviewBoard({
             <span className="flex items-center gap-2">
               <ToneDot tone={t.tone} live={t.key === "revival" && t.value > 0} />
               <span className="dc-label">{t.label}</span>
-              {t.active && <span className="dc-label ml-auto text-current">筛选中</span>}
+              {status && (
+                <span className={cn("dc-label ml-auto", status.state === "filtering" ? "text-current" : "text-muted-foreground")}>
+                  {status.label}
+                </span>
+              )}
             </span>
             <span className="mt-1.5 flex items-baseline gap-1.5">
               {t.unit ? (
@@ -248,7 +307,8 @@ export function ReviewBoard({
             </span>
             <span className="mt-1 block text-xs text-muted-foreground">{t.sub}</span>
           </button>
-        ))}
+          );
+        })}
       </div>
 
       <div className="dc-panel flex flex-wrap items-center gap-2 px-3 py-2.5">
@@ -257,7 +317,7 @@ export function ReviewBoard({
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索名称、路径或用途…"
+            placeholder="搜索名称、路径、用途或内部文件…"
             aria-label="搜索条目"
             className="h-8 pr-8 pl-8"
           />
@@ -307,7 +367,15 @@ export function ReviewBoard({
         )}
 
         {source === "sandbox" && onResetSandbox && (
-          <Button variant="ghost" size="sm" onClick={onResetSandbox} disabled={resetting}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onResetSandbox}
+            disabled={resetting}
+            data-sandbox-reset="toolbar"
+            title="清空隔离区后，可重置演示数据恢复完整模拟样本"
+            className="dc-tone-info dc-tone-text border-info/40 bg-info/10 hover:bg-info/20"
+          >
             <RefreshCw aria-hidden className={cn(resetting && "animate-spin")} />
             重置演示数据
           </Button>
@@ -316,12 +384,19 @@ export function ReviewBoard({
         <p className="dc-num ml-auto text-xs text-muted-foreground">
           {filtering ? `${listedCount} / ${groups.reduce((s, g) => s + g.itemCount, 0)} 项` : `${listedCount} 项待决策`}
           <span className="ml-2 font-sans">共扫描 {scannedCount.toLocaleString("zh-CN")} 项</span>
+          {hasQuery && (
+            <span className="ml-2 font-sans">
+              搜索覆盖全部 {searchScopeCount.toLocaleString("zh-CN")} 个扫描项
+              {search.scannedHits > 0 && ` · 命中 ${search.scannedHits.toLocaleString("zh-CN")} 个`}
+            </span>
+          )}
         </p>
       </div>
 
       <p className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-xs text-muted-foreground">
         <span className="dc-label">{FILTER_HINT[filter]}</span>
-        {filtering && <span>· 体积为该归属合计，不随筛选变化</span>}
+        {hasQuery && <span>· 内部文件命中归入最近的审核卡，保护项也会直接展开；卡片状态反映搜索匹配</span>}
+        {filtering && <span>· 数量/体积仍为类别合计，不随搜索或筛选变化</span>}
         {coverage && (coverage.incompleteDirs ?? 0) > 0 ? (
           <span className="dc-tone-review dc-tone-text">
             · {coverage.incompleteDirs} 个目录覆盖不足：
@@ -365,6 +440,7 @@ export function ReviewBoard({
               onDiagnose={onDiagnose}
               activeEntryId={activeEntryId}
               defaultOpen={showProtectedInline ? true : i < 6}
+              searchMatches={matchesForGroup(group)}
               style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}
             />
           ))}
@@ -394,6 +470,7 @@ export function ReviewBoard({
               <p className="flex items-start gap-2 px-1 text-sm leading-relaxed text-muted-foreground">
                 <ShieldCheck aria-hidden className="dc-tone-safe dc-tone-text mt-0.5 size-4 shrink-0" />
                 系统与软件关键文件。洁灵不会把它们放进勾选范围，展开只是为了让你看清「为什么别删」。
+                默认保护不等于隐藏内容：打开条目可只读逐层查看已扫描子树，也可用“只读扫描此目录”单独递归读取；这些操作都不会启用隔离。
               </p>
               {protectedGroups.map((group) => (
                 <OwnerGroupCard
@@ -407,6 +484,7 @@ export function ReviewBoard({
                   activeEntryId={activeEntryId}
                   defaultOpen={false}
                   selectionDisabled
+                  searchMatches={matchesForGroup(group)}
                 />
               ))}
             </CollapsibleContent>

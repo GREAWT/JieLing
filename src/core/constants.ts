@@ -59,6 +59,18 @@ export const SYSTEM_CRITICAL_NAMES = new Set([
   "ntuser.dat",
 ]);
 
+/** 这些目录可以作为只读扫描根查看，但扫描结果始终保持保护、不可隔离。 */
+export const READ_ONLY_ROOT_NAMES = new Set([
+  ...SYSTEM_CRITICAL_NAMES,
+  "Program Files",
+  "Program Files (x86)",
+  "ProgramData",
+]);
+
+export function isReadOnlyRootName(name: string): boolean {
+  return READ_ONLY_ROOT_NAMES.has(name.trim());
+}
+
 export const VERDICT_ORDER: Record<Verdict, number> = {
   safe_delete: 0,
   needs_review: 1,

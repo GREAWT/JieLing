@@ -25,7 +25,6 @@ import { REVIVAL_LABEL, VERDICT_LABEL, rebuildMechanisms } from "@/src/core/cons
 import type {
   OwnerKind,
   RevivalMechanism,
-  ScanPhase,
   Verdict,
 } from "@/src/core/types";
 
@@ -54,14 +53,6 @@ export function formatDateTime(ts: number): string {
     minute: "2-digit",
   });
 }
-
-export const PHASE_LABEL: Record<ScanPhase, string> = {
-  idle: "待扫描",
-  scanning: "正在扫描",
-  judging: "判定中",
-  ready: "扫描完成",
-  error: "扫描出错",
-};
 
 export const VERDICT_TONE: Record<Verdict, string> = {
   safe_delete: "dc-tone-safe",

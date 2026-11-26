@@ -166,6 +166,8 @@ export interface ScanProgress {
   truncated: boolean;
   /** 用户主动停止：结果是部分的，但不是出错 */
   stopped?: boolean;
+  /** 扫描根本身无法完整枚举时的覆盖原因（根本身不作为可勾选条目） */
+  rootCoverage?: ScanCoverage[];
   /** 各覆盖原因的目录数量，用于向用户说明扫描到了哪里 */
   coverage?: Partial<Record<ScanCoverage, number>> & { incompleteDirs?: number };
 }

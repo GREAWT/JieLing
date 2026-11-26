@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-  Archive, BookOpen, ChevronDown, FileDown, FileUp, FolderSearch, ListChecks, RefreshCw,
-  ShieldCheck, Sparkles, Stethoscope, TriangleAlert,
+  Archive, BadgeCheck, BookOpen, ChevronDown, ChevronUp, ClipboardPaste, Eraser, FileDown,
+  FileUp, FolderSearch, ListChecks, RefreshCw, ShieldCheck, Sparkles, Stethoscope, TriangleAlert,
 } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
@@ -22,7 +21,9 @@ import {
   DiagnosePanel, LandingHero, EmptyState, ErrorState, ConfirmQuarantineDialog,
   RestoreConflictDialog, EntryDrawer, RulesPanel, RevivalSummary, formatBytes,
 } from "@/src/components";
+import { PathInput } from "@/src/components/PathInput";
 import { Panel, ToneDot } from "@/src/components/shared";
+import { cn } from "@/lib/utils";
 import type {
   CleanupAction, DiagnosisReport, JudgedEntry, KnowledgeHit, LocalRule, OwnerGroup,
   QuarantineRecord, RestorePolicy, RevivalMechanism, RuleCandidate, RuleRevision,
@@ -30,12 +31,12 @@ import type {
 } from "@/src/core/types";
 import {
   DEFAULT_SCAN_OPTIONS, PRODUCT_NAME, PRODUCT_PHILOSOPHY,
-  QUARANTINE_TTL_DAYS, REVIVAL_LABEL, rebuildMechanisms,
+  QUARANTINE_TTL_DAYS, REVIVAL_LABEL, isReadOnlyRootName, rebuildMechanisms,
 } from "@/src/core/constants";
 import {
   createScanner, errorMessage, isFileSystemAccessSupported, openLocalRoot, openSandboxRoot,
   listQuarantine, purgeExpired, quarantineEntries, restoreEntries, restoreConflicts,
-  emptyQuarantine, deleteQuarantined,
+  emptyQuarantine, deleteQuarantined, resolveHandle, loadQuarantineForScan,
   SANDBOX_LABEL, generateSandbox, clearSandbox, sandboxReady, type Scanner,
   appendOpsManual, syncFolderDictionary, readJournal, itemsFromEntries, itemsFromRecords,
   journalError, OPS_MANUAL_NAME, FOLDER_DICTIONARY_NAME, type OpsEvent,
@@ -43,7 +44,7 @@ import {
 import { judgeAll } from "@/src/safety/risk";
 import { canQuarantineEntry } from "@/src/safety/guard";
 import { groupByOwner, sortGroups } from "@/src/safety/aggregate";
-import { createDrawerNavigation } from "@/src/app/review";
+import { createDrawerNavigation, lockReadOnlyEntries } from "@/src/app/review";
 import { compileLocalRules, matchAll } from "@/src/knowledge/match";
 import {
   candidateFromAi, localRuleFromCandidate, mergeKnowledgeHits, RULE_TRUST,
@@ -66,6 +67,9 @@ const IDLE_PROGRESS: ScanProgress = {
 
 const TAB_CLASS = "gap-1.5 rounded-lg border border-transparent px-3 py-1.5 text-sm data-[state=active]:border-primary/40 data-[state=active]:bg-primary/12 data-[state=active]:text-primary";
 
+type AiUiState = "local_only" | "cloud_ready" | "cloud_calling" | "cloud_success" | "cloud_failed";
+type JsonValidation = { ok: boolean; message: string } | null;
+
 type PermissionCapable = FileSystemDirectoryHandle & {
   queryPermission?: (descriptor?: { mode?: string }) => Promise<PermissionState>;
   requestPermission?: (descriptor?: { mode?: string }) => Promise<PermissionState>;
@@ -75,14 +79,16 @@ type PermissionCapable = FileSystemDirectoryHandle & {
 // path therefore re-checks on the main thread inside the click handler.
 async function ensureWritePermission(root: FileSystemDirectoryHandle): Promise<void> {
   const handle = root as PermissionCapable;
-  if (typeof handle.queryPermission === "function"
-    && await handle.queryPermission({ mode: "readwrite" }) === "granted") return;
+  // 先直接调用 requestPermission，尽量保留触发按钮的用户激活；已经授权时它会立即返回。
   if (typeof handle.requestPermission === "function") {
-    if (await handle.requestPermission({ mode: "readwrite" }) !== "granted") {
-      throw new Error("未获得写入授权，无法移入隔离区。");
+    const state = await handle.requestPermission({ mode: "readwrite" });
+    if (state !== "granted") {
+      throw new Error("未获得写入授权，无法修改隔离区。扫描结果仍保留，可继续只读查看。");
     }
     return;
   }
+  if (typeof handle.queryPermission === "function"
+    && await handle.queryPermission({ mode: "readwrite" }) === "granted") return;
   throw new Error("当前浏览器无法确认写入授权，已停止操作。");
 }
 
@@ -108,11 +114,26 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function StepHeading({ step, title, description }: { step: number; title: string; description: string }) {
+  return (
+    <div className="flex items-start gap-3">
+      <span className="dc-num dc-tone-info dc-tone-bg dc-tone-text grid size-7 shrink-0 place-content-center rounded-full border border-current text-xs font-semibold">
+        {step}
+      </span>
+      <div className="grid gap-0.5">
+        <h3 className="dc-display text-sm font-semibold tracking-wide">{title}</h3>
+        <p className="text-xs leading-relaxed text-muted-foreground">{description}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [source, setSource] = useState<ScanSource | null>(null);
   const [rootLabel, setRootLabel] = useState("");
   const [progress, setProgress] = useState<ScanProgress>(IDLE_PROGRESS);
   const [groups, setGroups] = useState<OwnerGroup[]>([]);
+  const [scanEntries, setScanEntries] = useState<JudgedEntry[]>([]);
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
   const [records, setRecords] = useState<QuarantineRecord[]>([]);
   const [view, setView] = useState("review");
@@ -123,8 +144,14 @@ export default function App() {
   const [resetOpen, setResetOpen] = useState(false);
   const [sandboxBusy, setSandboxBusy] = useState(false);
   const [sandboxProgress, setSandboxProgress] = useState<{ created: number; total: number } | null>(null);
+  const [localPickBusy, setLocalPickBusy] = useState(false);
+  const [readOnlyScan, setReadOnlyScan] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiNotice, setAiNotice] = useState<string | null>(null);
+  const [aiState, setAiState] = useState<AiUiState>("local_only");
+  const [clearing, setClearing] = useState(false);
+  const [jsonExpanded, setJsonExpanded] = useState(false);
+  const [jsonValidation, setJsonValidation] = useState<JsonValidation>(null);
   // 「仅使用本地规则」：不向云端发送任何目录特征
   const [localOnly, setLocalOnly] = useState(() => localStorage.getItem("dareclean.localOnly") !== "0");
   const localOnlyRef = useRef(localOnly);
@@ -165,6 +192,7 @@ export default function App() {
   const retryRef = useRef<() => void>(() => {});
   const dockRef = useRef<HTMLDivElement | null>(null);
   const [dockHeight, setDockHeight] = useState(0);
+  const diagnosisFileRef = useRef<HTMLInputElement | null>(null);
   const rootHashRef = useRef("");
   const ruleRepo = useMemo<RuleRepository>(() => createRuleRepository(), []);
   const [customRules, setCustomRules] = useState<LocalRule[]>([]);
@@ -201,7 +229,9 @@ export default function App() {
   useEffect(() => {
     localOnlyRef.current = localOnly;
     localStorage.setItem("dareclean.localOnly", localOnly ? "1" : "0");
-  }, [localOnly]);
+    if (localOnly || source === "sandbox") setAiState("local_only");
+    else if (source === "local") setAiState((prev) => prev === "cloud_calling" ? prev : "cloud_ready");
+  }, [localOnly, source]);
 
   // 底部选择条的高度是动态的：写进内边距，最后一行永远不会被挡住
   const measureDock = useCallback(() => {
@@ -221,13 +251,18 @@ export default function App() {
     list: ScanEntry[],
     hits: Map<string, KnowledgeHit | null>,
     aiIds: Set<string>,
+    readOnly = false,
   ): JudgedEntry[] => {
-    const judged = judgeAll(list, hits).map((entry) =>
+    let judged = judgeAll(list, hits).map((entry) =>
       aiIds.has(entry.id) ? { ...entry, source: "ai_candidate" as const }
         : cachedIdsRef.current.has(entry.id) ? { ...entry, source: "cloud_cache" as const } : entry);
+    if (readOnly) {
+      judged = lockReadOnlyEntries(judged);
+    }
     judgedRef.current = judged;
     entriesRef.current = list;
     hitsRef.current = hits;
+    setScanEntries(judged);
     setGroups(sortGroups(groupByOwner(judged)));
     const selectable = new Set(
       judged.filter((e) => canQuarantineEntry(e).allowed).map((e) => e.id),
@@ -269,7 +304,8 @@ export default function App() {
       .sort((a, b) => b.size - a.size)
       .slice(0, 24);
     if (!candidates.length) {
-      setAiNotice(null);
+      setAiNotice("没有需要云端辅助的未识别目录，本次未调用云端。");
+      setAiState("cloud_ready");
       return;
     }
     const byId = new Map(entriesRef.current.map((e) => [e.id, e]));
@@ -280,6 +316,7 @@ export default function App() {
       return toJudgeItem(entry, byId, key);
     });
     setAiBusy(true);
+    setAiState("cloud_calling");
     try {
       const response = await judgeDirectories(items);
       const nextHits = new Map(hitsRef.current);
@@ -364,14 +401,21 @@ export default function App() {
       aiIdsRef.current = nextAiIds;
       applyJudgment(entriesRef.current, nextHits, nextAiIds);
       const capNote = capped > 0 ? `；${capped} 项云端结论已封顶为「需要确认」` : "";
-      if (response.aiStatus !== "ok") setAiNotice(AI_STATUS_TEXT[response.aiStatus] + capNote);
-      else if (response.judgments.length) {
+      if (response.aiStatus !== "ok") {
+        setAiState("cloud_failed");
+        setAiNotice(AI_STATUS_TEXT[response.aiStatus] + capNote);
+      } else if (response.judgments.length) {
+        setAiState("cloud_success");
         setAiNotice((response.cachedCount > 0
           ? `共享缓存命中 ${response.cachedCount} 条，其余 ${response.judgments.length - response.cachedCount} 条为 AI 辅助推断`
           : `AI 辅助推断了 ${response.judgments.length} 个未识别目录`) + capNote
           + "；候选只在本页生效，需到「判定规则」审核后才会保存。");
-      } else setAiNotice(null);
+      } else {
+        setAiState("cloud_ready");
+        setAiNotice("云端辅助已允许，但本次没有返回可展示的判定。");
+      }
     } catch (err) {
+      setAiState("cloud_failed");
       setAiNotice(`${apiErrorText(err)}；已回退本地规则，这些目录保持「需要确认」，不会被自动删除。`);
     } finally {
       setAiBusy(false);
@@ -382,8 +426,10 @@ export default function App() {
     root: FileSystemDirectoryHandle,
     nextSource: ScanSource,
     label: string,
+    readOnly = false,
   ) => {
     rootRef.current = root;
+    setReadOnlyScan(readOnly);
     aiIdsRef.current = new Set();
     cachedIdsRef.current = new Set();
     bufferRef.current = [];
@@ -393,7 +439,10 @@ export default function App() {
     setRootLabel(label);
     setError(null);
     setAiNotice(null);
+    setAiBusy(false);
+    setAiState(localOnlyRef.current || nextSource === "sandbox" ? "local_only" : "cloud_ready");
     setGroups([]);
+    setScanEntries([]);
     setSelectedIds(new Set());
     setDrawerOpen(false);
     setDrawerIds([]);
@@ -426,28 +475,53 @@ export default function App() {
       }
       const externalRules = compileLocalRules(libraryRules, rootHash);
       const hits = matchAll(all, externalRules);
-      const judged = applyJudgment(all, hits, new Set());
+      const judged = applyJudgment(all, hits, new Set(), readOnly);
       setProgress({ ...result.progress, phase: "ready" });
-      const list = await refreshQuarantine(root);
+      // 真实目录扫描阶段始终只读：即使此前授予过写权限，也不创建隔离目录、不写清单或审计。
+      let scanRecords: QuarantineRecord[] = [];
+      try {
+        scanRecords = await loadQuarantineForScan(root, nextSource);
+        setRecords(scanRecords);
+      } catch (quarantineErr) {
+        setRecords([]);
+        toast.warning(`已有隔离记录只读读取失败：${errorMessage(quarantineErr)}`);
+      }
+      if (nextSource === "sandbox") {
+        await writeJournal(root, null, new Set(scanRecords.filter((r) => !r.restored).map((r) => r.originalPath)));
+      }
       if (result.progress.stopped) {
         toast.info(`已停止扫描，保留已发现的 ${all.length} 项结果；不完整目录已禁止整体隔离`);
       }
-      if (localOnlyRef.current) {
-        setAiNotice(null);
+      if (localOnlyRef.current || nextSource === "sandbox" || readOnly) {
+        setAiState("local_only");
+        setAiNotice(readOnly
+          ? "受保护目录只读扫描：不请求云端，所有条目仅可展开查看，不能隔离或删除。"
+          : nextSource === "sandbox"
+            ? "演示模式默认只使用本地规则，未请求云端。"
+            : null);
       } else {
         await enrichWithAi(judged);
       }
-      // 扫描后即建立/更新文件夹名录，清理后再追加运维手册
-      await writeJournal(root, null, new Set(list.filter((r) => !r.restored).map((r) => r.originalPath)));
+      if (all.length === 0) {
+        toast.info(nextSource === "local"
+          ? "空结果：所选目录为空或没有可访问条目。"
+          : "空结果：没有发现可审核条目。");
+      } else if (nextSource === "local") {
+        toast.success(`已扫描 ${all.length} 项；扫描阶段只读，确认隔离时才会申请写入授权。`);
+      }
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
         // 兼容不支持取消消息的旧浏览器：已扫到的部分照常判定，并明确标注结果不完整
         const partial = bufferRef.current;
         if (partial.length > 0) {
           const hits = matchAll(partial);
-          applyJudgment(partial, hits, new Set());
+          applyJudgment(partial, hits, new Set(), readOnly);
           setProgress((prev) => ({ ...prev, phase: "ready", stopped: true }));
-          void refreshQuarantine(root);
+          try {
+            setRecords(await loadQuarantineForScan(root, nextSource));
+          } catch {
+            setRecords([]);
+          }
           toast.info(`已停止扫描，保留已发现的 ${partial.length} 项结果；不完整目录已禁止整体隔离`);
         } else {
           setProgress({ ...IDLE_PROGRESS, phase: "ready", stopped: true });
@@ -457,7 +531,7 @@ export default function App() {
       }
       setError(errorMessage(err));
       setProgress((prev) => ({ ...prev, phase: "error" }));
-      retryRef.current = () => void runScan(root, nextSource, label);
+      retryRef.current = () => void runScan(root, nextSource, label, readOnly);
     } finally {
       scannerRef.current = null;
     }
@@ -466,6 +540,24 @@ export default function App() {
   const handleCancelScan = useCallback(() => {
     scannerRef.current?.cancel();
   }, []);
+
+  const handleScanSubdirectory = useCallback(async (entry: JudgedEntry) => {
+    const root = rootRef.current;
+    if (!root || busy || progress.phase === "scanning" || progress.phase === "judging") return;
+    try {
+      const handle = await resolveHandle(root, entry.path);
+      if (handle.kind !== "directory") throw new Error("只有目录可以作为单独扫描根。");
+      setDrawerOpen(false);
+      await runScan(
+        handle as FileSystemDirectoryHandle,
+        source ?? "local",
+        `${rootLabel}/${entry.path}`,
+        entry.locked || entry.verdict === "keep_locked",
+      );
+    } catch (err) {
+      toast.error(`无法只读扫描此目录：${errorMessage(err)}`);
+    }
+  }, [busy, progress.phase, rootLabel, runScan, source]);
 
   // 演示数据已生成过就只重扫：重建会把已隔离的条目放回原位置，导致还原失败
   const handleSandbox = useCallback(async () => {
@@ -480,6 +572,7 @@ export default function App() {
         setSource("sandbox");
         setRootLabel(SANDBOX_LABEL);
         setGroups([]);
+        setScanEntries([]);
         setSelectedIds(new Set());
         setDrawerOpen(false);
         setDrawerIds([]);
@@ -505,15 +598,28 @@ export default function App() {
       retryRef.current = handlePickLocal;
       return;
     }
+    setLocalPickBusy(true);
+    setError(null);
+    toast.info("请在系统窗口中选择文件夹；扫描只申请读取权限。");
     void (async () => {
       try {
         const root = await openLocalRoot();
-        await runScan(root, "local", root.name);
+        setLocalPickBusy(false);
+        const readOnly = isReadOnlyRootName(root.name);
+        await runScan(root, "local", root.name, readOnly);
       } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") return;
-        setError(errorMessage(err));
+        if (err instanceof DOMException && err.name === "AbortError") {
+          toast.info("已取消选择文件夹，未进行扫描。");
+          retryRef.current = handlePickLocal;
+          return;
+        }
+        const message = errorMessage(err);
+        setError(message);
         setProgress((prev) => ({ ...prev, phase: "error" }));
+        toast.error(`无法扫描所选文件夹：${message}`);
         retryRef.current = handlePickLocal;
+      } finally {
+        setLocalPickBusy(false);
       }
     })();
   }, [localSupported, runScan]);
@@ -821,6 +927,8 @@ export default function App() {
     const root = rootRef.current;
     if (!root || busy || busyId) return;
     try {
+      // 先申请写入授权，保留按钮点击产生的用户激活；随后才异步探测同名冲突。
+      await ensureWritePermission(root);
       // 同名冲突必须先问用户：跳过 / 保留两份，不静默覆盖
       const conflicts = await restoreConflicts(root, [record]);
       if (conflicts.length > 0) {
@@ -865,26 +973,35 @@ export default function App() {
 
   const handleClearQuarantine = useCallback(async () => {
     const root = rootRef.current;
-    if (!root || busy) return;
+    if (!root || busy || clearing) return;
     setBusy(true);
+    setClearing(true);
     try {
       const active = records.filter((r) => !r.restored);
       await ensureWritePermission(root);
-      await emptyQuarantine(root);
+      const outcome = await emptyQuarantine(root);
       const list = await refreshQuarantine(root);
       await writeJournal(root, {
         operation: "clear",
         at: Date.now(),
         items: itemsFromRecords(active),
-        note: "操作记录与恢复说明作为审计历史保留，未随隔离区清空。",
+        note: outcome.failures.length > 0
+          ? `部分清空失败：已删除 ${outcome.removed} 项，${outcome.failures.length} 项保留在隔离区；操作记录与恢复说明保留。`
+          : "操作记录与恢复说明作为审计历史保留，未随隔离区清空。",
       }, new Set(list.filter((r) => !r.restored).map((r) => r.originalPath)));
-      toast.success("隔离区已清空");
+      if (outcome.failures.length > 0) {
+        toast.warning(`清空未完全成功：已删除 ${outcome.removed} 项，${outcome.failures.length} 项仍保留；${outcome.failures[0].reason}`);
+      } else {
+        toast.success("隔离区已清空；审计记录仍保留");
+      }
     } catch (err) {
       toast.error(`清空失败：${errorMessage(err)}`);
+      await refreshQuarantine(root);
     } finally {
       setBusy(false);
+      setClearing(false);
     }
-  }, [records, busy, refreshQuarantine, writeJournal]);
+  }, [busy, clearing, records, refreshQuarantine, writeJournal]);
 
   const handlePurgeExpired = useCallback(async () => {
     const root = rootRef.current;
@@ -946,6 +1063,7 @@ export default function App() {
   }, [scriptOutput]);
 
   useEffect(() => setCloudPayloadPreview(null), [diagnosisSubject, symptoms, scriptOutput]);
+  useEffect(() => setJsonValidation(null), [scriptOutput]);
 
   // 复活提示必须能一键跳到诊断，并把目标与症状预填好，而不是让用户自己再找一遍
   const openDiagnoseFor = useCallback((
@@ -1013,10 +1131,42 @@ export default function App() {
       const raw = await file.text();
       setScriptOutput(raw);
       importLocalReport(raw);
+      setJsonValidation({ ok: true, message: `已读取 ${file.name}` });
     } catch {
       setDiagnoseError("读取诊断结果文件失败，请重新选择。");
+      setJsonValidation({ ok: false, message: "读取文件失败" });
     }
   }, [importLocalReport]);
+
+  const handlePasteJson = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text.trim()) {
+        setJsonValidation({ ok: false, message: "剪贴板为空，未读取到 JSON。" });
+        return;
+      }
+      setScriptOutput(text);
+      setJsonValidation({ ok: true, message: `已从剪贴板读取 ${text.length.toLocaleString("zh-CN")} 个字符。` });
+    } catch (err) {
+      setJsonValidation({ ok: false, message: `无法读取剪贴板：${errorMessage(err)}；也可使用文件选择。` });
+    }
+  }, []);
+
+  const handleValidateJson = useCallback(() => {
+    if (!scriptOutput.trim()) {
+      setJsonValidation({ ok: false, message: "还没有粘贴或选择 JSON。" });
+      return;
+    }
+    try {
+      const parsed = parseDiagnosisReport(scriptOutput);
+      setJsonValidation({
+        ok: true,
+        message: `JSON 有效：本地证据 ${parsed.evidence.length} 项，发现 ${parsed.findings.length} 项。`,
+      });
+    } catch (err) {
+      setJsonValidation({ ok: false, message: errorMessage(err) });
+    }
+  }, [scriptOutput]);
 
   const handleDiagnose = useCallback(async () => {
     if (!diagnosisSubject) {
@@ -1173,6 +1323,7 @@ export default function App() {
             localSupported={localSupported}
             onUseSandbox={() => void handleSandbox()}
             onPickLocal={handlePickLocal}
+            localPicking={localPickBusy}
           />
 
           <main className="grid gap-4 pt-4">
@@ -1184,6 +1335,7 @@ export default function App() {
                   progress={sandboxProgress}
                   onPickLocal={handlePickLocal}
                   localSupported={localSupported}
+                  picking={localPickBusy}
                 />
                 {!localSupported && (
                   <ErrorState
@@ -1219,8 +1371,9 @@ export default function App() {
                     <CollapsibleContent>
                       <p className="mt-2 border-t border-hairline pt-2.5 text-xs leading-relaxed text-muted-foreground">
                         这是能力边界而不是权限问题：网页无法枚举服务、计划任务与卸载器。
-                        顽固软件诊断分四步：选择问题目录、生成并运行<strong className="text-foreground">只读</strong>脚本、
-                        导入结果文件、查看本地诊断建议。需要时可再请求云端 AI 辅助分析，结果来源会明确标注。
+                        顽固软件诊断按五步保留在页面上：填写目录与症状、生成只读脚本、导入结果、查看本地建议、按需请求云端辅助。
+                        真实目录也受浏览器原生选择器限制：部分系统目录、包含系统文件的目录或敏感位置可能被直接拒绝；
+                        AppData、Program Files、Recovery 等不保证可以选择，洁灵不会绕过浏览器限制。
                         任何触及注册表或卸载的动作，都会先向你申请确认；优先走官方卸载器，手改注册表是最后手段。
                       </p>
                     </CollapsibleContent>
@@ -1240,6 +1393,9 @@ export default function App() {
                     onLocalOnlyChange={setLocalOnly}
                     aiBusy={aiBusy}
                     aiNotice={aiNotice}
+                    aiState={source === "sandbox" ? "local_only" : aiState}
+                    cloudAllowed={source !== "sandbox"}
+                    readOnly={readOnlyScan}
                   />
                 </div>
 
@@ -1276,6 +1432,40 @@ export default function App() {
 
                   <TabsContent value="review" className="mt-4">
                     <div data-region="review-board" className="grid gap-3">
+                      {source === "sandbox" && activeRecordCount > 0 && (
+                        <div
+                          data-region="sandbox-quarantine-note"
+                          className="dc-panel dc-rail dc-tone-review flex flex-wrap items-start gap-3 rounded-xl px-4 py-3"
+                        >
+                          <Archive aria-hidden className="dc-tone-text mt-0.5 size-4 shrink-0" />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium">
+                              演示样本里有 {activeRecordCount} 项在隔离区，原位置因此不再显示它们
+                            </p>
+                            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                              洁灵不会自动移走样本；只有你确认「移入隔离区」后才会移动。到隔离区可以逐项还原，
+                              或重置演示数据补回样本（仍在隔离区的条目会被跳过，避免覆盖待还原内容）。
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 flex-wrap gap-2">
+                            <Button variant="outline" size="sm" onClick={() => setView("quarantine")}>
+                              <Archive aria-hidden />
+                              查看隔离区
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setResetOpen(true)}
+                              disabled={sandboxBusy}
+                              data-sandbox-reset="banner"
+                              className="dc-tone-info dc-tone-text border-info/40 bg-info/10 hover:bg-info/20"
+                            >
+                              <RefreshCw aria-hidden />
+                              重置演示数据
+                            </Button>
+                          </div>
+                        </div>
+                      )}
                       <RevivalSummary groups={revivalGroups} onDiagnose={handleDiagnoseGroup} />
                       {groups.length === 0 && scanning ? (
                         <ReviewBoard
@@ -1293,7 +1483,7 @@ export default function App() {
                             ? "扫描被手动停止且尚未发现条目。可以重新扫描，或换一个目录。"
                             : "没有发现缓存、临时文件或残留目录。可以换一个目录，或重置演示数据（不影响真实文件）。"}
                           action={source === "sandbox"
-                            ? <Button variant="outline" onClick={() => setResetOpen(true)} disabled={sandboxBusy}>
+                            ? <Button data-sandbox-reset="empty" onClick={() => setResetOpen(true)} disabled={sandboxBusy}>
                                 <RefreshCw aria-hidden />重置演示数据
                               </Button>
                             : <Button variant="outline" onClick={handlePickLocal}>
@@ -1316,6 +1506,7 @@ export default function App() {
                           stopped={progress.stopped}
                           coverage={progress.coverage}
                           source={source}
+                          scanEntries={scanEntries}
                           onResetSandbox={() => setResetOpen(true)}
                           resetting={sandboxBusy}
                         />
@@ -1348,6 +1539,7 @@ export default function App() {
                         onClearAll={() => void handleClearQuarantine()}
                         busyId={busyId}
                         busy={busy}
+                        clearing={clearing}
                         source={source}
                       />
 
@@ -1357,7 +1549,7 @@ export default function App() {
                           操作记录与恢复说明
                         </h2>
                         <p className="text-xs leading-relaxed text-muted-foreground">
-                          每次扫描与清理后，{PRODUCT_NAME}会在隔离区目录内自动写入两份审计文件：操作记录保存做了什么、为什么、怎么撤回；恢复说明标注每个文件夹是什么、归属谁、能不能删。清空隔离区不会抹掉这两份审计历史。
+                          每次有写入授权的清理操作后，{PRODUCT_NAME}会在隔离区目录内写入两份审计文件：操作记录保存做了什么、为什么、怎么撤回；恢复说明标注每个文件夹是什么、归属谁、能不能删。扫描阶段只读，不创建隔离目录或审计文件；清空隔离区不会抹掉这两份审计历史。
                         </p>
                         <div className="flex flex-wrap gap-2">
                           <Button variant="outline" size="sm" onClick={() => void handleDownloadJournal(OPS_MANUAL_NAME)}>
@@ -1379,36 +1571,38 @@ export default function App() {
                           <ShieldCheck aria-hidden className="dc-tone-text size-4" />
                           顽固软件诊断：查找删后重建、无法卸载的原因
                         </h2>
-                        <ol className="grid gap-2 text-xs leading-relaxed text-muted-foreground sm:grid-cols-4">
-                          {["选择问题目录", "生成并运行只读脚本", "导入诊断结果文件", "查看本地建议"].map((step, index) => (
+                        <ol className="grid gap-2 text-xs leading-relaxed text-muted-foreground sm:grid-cols-5">
+                          {["填写目录与症状", "生成只读脚本", "导入诊断文件", "查看本地建议", "按需请求云端"].map((step, index) => (
                             <li key={step} className="flex items-start gap-2"><span className="dc-num dc-tone-text font-semibold">{index + 1}</span>{step}</li>
                           ))}
                         </ol>
                         <p className="text-xs leading-relaxed text-muted-foreground">
-                          浏览器无法访问注册表、服务与卸载器——这是能力边界，不是权限问题。所以这里分两步：
-                          ① 生成<strong className="text-foreground">只读</strong>诊断脚本，由你在本机以普通权限运行，结果写入 UTF-8 文件后再导入；
-                          ② 先在本地解析证据，再可选请求云端辅助解释。只有你主动选择提升权限时才以管理员身份运行；AI 负责辅助解释，处置脚本由本地安全模板生成，默认 dry-run，高危项默认不勾选。
+                          浏览器无法访问注册表、服务与卸载器——这是能力边界，不是权限问题。下面五步会一直保留在页面上：
+                          只读脚本由你在本机以普通权限运行；本地证据解析始终可用，云端辅助仅在你关闭“仅本地规则”后按需请求。
+                          处置脚本由本地安全模板生成，默认 dry-run，高危项默认不勾选。
                         </p>
                       </Panel>
 
                       <Panel className="grid gap-3.5 rounded-xl px-4 py-4">
+                        <StepHeading
+                          step={1}
+                          title="填写问题目录和症状"
+                          description="先确定要排查的软件目录与异常表现；扫描根目录仅用于把审核台条目换算成绝对路径。"
+                        />
                         <div className="grid gap-1.5">
                           <Label htmlFor="root-abs" className="dc-label text-muted-foreground">
                             扫描根目录的完整路径（可选）
                           </Label>
-                          <Input
+                          <PathInput
                             id="root-abs"
                             value={rootAbsPath}
                             placeholder="C:\Users\你的用户名\AppData\Local"
-                            className="dc-path"
-                            onChange={(event) => {
-                              setRootAbsPath(event.target.value);
-                              localStorage.setItem("dareclean.rootAbsPath", event.target.value);
+                            onValueChange={(value) => {
+                              setRootAbsPath(value);
+                              localStorage.setItem("dareclean.rootAbsPath", value);
                             }}
+                            hint="填写后，审核台勾选的条目会自动换算成绝对路径作为诊断目标。浏览器出于隐私不返回完整路径，也不允许网页直接启动资源管理器：请在资源管理器地址栏复制后按 Ctrl+V 粘贴到框内；右侧按钮只复制当前路径。"
                           />
-                          <p className="text-xs leading-relaxed text-muted-foreground">
-                            填写后，审核台勾选的条目会自动换算成绝对路径作为诊断目标。浏览器出于隐私不返回完整路径，需要你从资源管理器地址栏复制。
-                          </p>
                         </div>
                         {diagnoseRelative && (
                           <p className="dc-tone-info dc-tone-bg dc-tone-border flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-3 py-2 text-xs">
@@ -1424,14 +1618,14 @@ export default function App() {
                         )}
                         <div className="grid gap-1.5">
                           <Label htmlFor="diagnose-target" className="dc-label text-muted-foreground">
-                            1 · 选择问题目录完整路径
+                            问题目录完整路径
                           </Label>
-                          <Input
+                          <PathInput
                             id="diagnose-target"
                             value={diagnoseTarget}
                             placeholder="C:\Program Files\SomeCloudDrive"
-                            className="dc-path"
-                            onChange={(event) => setDiagnoseTarget(event.target.value)}
+                            onValueChange={setDiagnoseTarget}
+                            hint="可直接输入，或在资源管理器地址栏复制后按 Ctrl+V 粘贴。浏览器不允许网页直接打开资源管理器；右侧按钮只复制当前路径。"
                           />
                         </div>
                         <div className="grid gap-1.5">
@@ -1444,8 +1638,15 @@ export default function App() {
                             onChange={(event) => setSymptoms(event.target.value)}
                           />
                         </div>
+                        <div className="border-t border-hairline pt-3">
+                          <StepHeading
+                            step={2}
+                            title="生成并下载只读诊断脚本"
+                            description="脚本只枚举与读取，不删除、不修改；默认普通权限运行，结果写入 UTF-8 文件。"
+                          />
+                        </div>
                         <div className="flex flex-wrap gap-2">
-                          <Button variant="outline" onClick={handleReadonlyScript} disabled={diagnoseBusy}>
+                          <Button onClick={handleReadonlyScript} disabled={diagnoseBusy}>
                             <FileDown aria-hidden />
                             生成只读诊断脚本
                           </Button>
@@ -1458,13 +1659,34 @@ export default function App() {
                               下载 dareclean-diagnose.ps1
                             </Button>
                           )}
-                          <Button variant="outline" asChild>
-                            <label htmlFor="diagnosis-file" className="cursor-pointer">
-                              <FileUp aria-hidden />3 · 选择诊断结果文件
-                            </label>
+                        </div>
+                        {readonlyScript && (
+                          <div className="grid gap-1 rounded-lg border border-hairline bg-muted/30 px-3 py-2.5">
+                            <p className="text-xs leading-relaxed text-muted-foreground">
+                              在本机 PowerShell 以普通权限运行：
+                            </p>
+                            <code className="dc-path break-all rounded bg-background px-2 py-1 text-xs">
+                              powershell -ExecutionPolicy Bypass -File .\\dareclean-diagnose.ps1
+                            </code>
+                            <p className="text-xs leading-relaxed text-muted-foreground">
+                              结果写入当前目录的 <code className="dc-path">dareclean-diagnosis.json</code>（UTF-8 无 BOM），再进入下一步导入。
+                            </p>
+                          </div>
+                        )}
+                        <div className="border-t border-hairline pt-3">
+                          <StepHeading
+                            step={3}
+                            title="选择诊断结果文件"
+                            description="优先选择脚本生成的 JSON 文件；高级粘贴是同一输入的辅助方式。"
+                          />
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button onClick={() => diagnosisFileRef.current?.click()}>
+                            <FileUp aria-hidden />选择诊断结果文件
                           </Button>
                           <input
                             id="diagnosis-file"
+                            ref={diagnosisFileRef}
                             type="file"
                             accept=".json,application/json"
                             className="sr-only"
@@ -1475,26 +1697,10 @@ export default function App() {
                               input.value = "";
                             }}
                           />
-                          <Button onClick={() => importLocalReport(scriptOutput)} disabled={diagnoseBusy || !scriptOutput.trim()}>
-                            <ListChecks aria-hidden />查看本地建议
-                          </Button>
-                          <Button variant="outline" onClick={handlePreviewCloudData} disabled={diagnoseBusy}>
-                            查看将发送的数据
-                          </Button>
-                          <Button onClick={() => void handleDiagnose()} disabled={diagnoseBusy} title="本地优先生成建议；仅本地或演示模式不会请求云端">
-                            {diagnoseBusy ? <Spinner /> : <Sparkles aria-hidden />}
-                            {diagnoseBusy ? "生成建议中…" : "生成诊断建议"}
-                          </Button>
+                          <span className="text-xs text-muted-foreground">
+                            {localDiagnosis.report ? `已解析 ${localDiagnosis.report.evidence.length} 项本地证据` : "尚未导入本地诊断 JSON"}
+                          </span>
                         </div>
-                        {readonlyScript && (
-                          <p className="text-xs leading-relaxed text-muted-foreground">
-                            在本机 PowerShell 以普通权限运行：
-                            <code className="dc-path mx-1 rounded bg-muted px-1 py-0.5">
-                              powershell -ExecutionPolicy Bypass -File .\dareclean-diagnose.ps1
-                            </code>
-                            2 · 脚本只枚举与读取，不删除、不修改任何内容；结果写入当前目录的 <code className="dc-path">dareclean-diagnosis.json</code>（UTF-8 无 BOM），再回到这里导入。
-                          </p>
-                        )}
                         <Collapsible>
                           <CollapsibleTrigger asChild>
                             <Button variant="ghost" size="sm" className="group/advanced w-fit">
@@ -1502,19 +1708,116 @@ export default function App() {
                               <ChevronDown aria-hidden className="transition-transform group-data-[state=open]/advanced:rotate-180" />
                             </Button>
                           </CollapsibleTrigger>
-                          <CollapsibleContent className="grid gap-1.5 pt-2">
-                            <Label htmlFor="script-output" className="dc-label text-muted-foreground">只读脚本输出（可选，粘贴 diagnosis.json 内容）</Label>
-                            <Textarea
-                              id="script-output"
-                              value={scriptOutput}
-                              rows={5}
-                              className="dc-path"
-                              placeholder="不粘贴也可以请求云端辅助分析，但不会生成可执行处方；AI 只能凭症状推断。"
-                              onChange={(event) => setScriptOutput(event.target.value)}
-                            />
+                          <CollapsibleContent className="grid gap-2 pt-2">
+                            <div className="flex flex-wrap gap-1.5">
+                              <Button type="button" variant="outline" size="sm" onClick={() => void handlePasteJson()}>
+                                <ClipboardPaste aria-hidden />粘贴剪贴板
+                              </Button>
+                              <Button type="button" variant="outline" size="sm" onClick={() => diagnosisFileRef.current?.click()}>
+                                <FileUp aria-hidden />选择 JSON 文件
+                              </Button>
+                              <Button type="button" variant="outline" size="sm" onClick={handleValidateJson} disabled={!scriptOutput.trim()}>
+                                <BadgeCheck aria-hidden />校验
+                              </Button>
+                              <Button type="button" variant="ghost" size="sm" onClick={() => { setScriptOutput(""); setJsonValidation(null); }} disabled={!scriptOutput}>
+                                <Eraser aria-hidden />清空
+                              </Button>
+                            </div>
+                            <Label htmlFor="script-output" className="dc-label text-muted-foreground">只读脚本输出（可选，粘贴或选择 diagnosis.json）</Label>
+                            <div className="relative">
+                              <Textarea
+                                id="script-output"
+                                value={scriptOutput}
+                                rows={8}
+                                className={cn(
+                                  "dc-path resize-none overflow-auto pb-12 transition-[max-height] duration-200",
+                                  jsonExpanded ? "max-h-96" : "max-h-40",
+                                )}
+                                style={{ scrollPaddingBottom: "3rem" }}
+                                placeholder="可以粘贴只读诊断 JSON，或点击上方“选择 JSON 文件”。"
+                                onChange={(event) => setScriptOutput(event.target.value)}
+                              />
+                              {!jsonExpanded && scriptOutput.trim() && (
+                                <div data-json-mask aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-12 rounded-b-md bg-gradient-to-t from-background via-background/80 to-transparent" />
+                              )}
+                            </div>
+                            {scriptOutput.trim() && (
+                              <div className="flex justify-center">
+                                <Button
+                                  data-json-expand
+                                  type="button"
+                                  variant="outline"
+                                  size="xs"
+                                  onClick={() => setJsonExpanded((value) => !value)}
+                                >
+                                  {jsonExpanded ? <ChevronUp aria-hidden /> : <ChevronDown aria-hidden />}
+                                  {jsonExpanded ? "收起" : "展开全部"}
+                                </Button>
+                              </div>
+                            )}
+                            {jsonValidation && (
+                              <p
+                                role="status"
+                                className={cn(
+                                  "rounded-md border px-3 py-2 text-xs",
+                                  jsonValidation.ok
+                                    ? "dc-tone-safe dc-tone-bg dc-tone-border dc-tone-text"
+                                    : "dc-tone-danger dc-tone-bg dc-tone-border dc-tone-text",
+                                )}
+                              >
+                                {jsonValidation.message}
+                              </p>
+                            )}
                           </CollapsibleContent>
                         </Collapsible>
-                        {localOnly && <p className="text-xs text-muted-foreground">当前仅本地规则：云端建议已停用，导入文件后仍可完整查看本地诊断与处理建议。</p>}
+                        <div className="border-t border-hairline pt-3">
+                          <StepHeading
+                            step={4}
+                            title="查看本地建议"
+                            description="只使用本地证据解析，不依赖网络；发现、动作和卸载引导都来自本地校验结果。"
+                          />
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button onClick={() => importLocalReport(scriptOutput)} disabled={diagnoseBusy || !scriptOutput.trim()}>
+                            <ListChecks aria-hidden />查看本地建议
+                          </Button>
+                          <span className="text-xs text-muted-foreground">
+                            {localDiagnosis.report
+                              ? `${localDiagnosis.report.findings.length} 项发现，${localDiagnosis.report.evidence.length} 项证据`
+                              : "先完成第 3 步导入诊断 JSON"}
+                          </span>
+                        </div>
+                        <div className="border-t border-hairline pt-3">
+                          <StepHeading
+                            step={5}
+                            title="按需请求云端辅助"
+                            description="先预览将发送的脱敏字段，再生成云端辅助建议；AI 不直接执行清理。"
+                          />
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            variant="outline"
+                            onClick={handlePreviewCloudData}
+                            disabled={diagnoseBusy || localOnly || source === "sandbox"}
+                          >
+                            预览将发送的数据
+                          </Button>
+                          <Button
+                            onClick={() => void handleDiagnose()}
+                            disabled={diagnoseBusy || localOnly || source === "sandbox"}
+                            title={localOnly || source === "sandbox" ? "当前仅本地模式，不会请求云端" : "本地优先生成建议；云端只补充解释"}
+                          >
+                            {diagnoseBusy ? <Spinner /> : <Sparkles aria-hidden />}
+                            {diagnoseBusy ? "生成建议中…" : "生成云端辅助建议"}
+                          </Button>
+                        </div>
+                        {(localOnly || source === "sandbox") && (
+                          <p className="dc-tone-review dc-tone-bg dc-tone-border dc-tone-text rounded-lg border px-3 py-2 text-xs leading-relaxed">
+                            {source === "sandbox"
+                              ? "演示模式固定使用本地规则，云端辅助不可用。"
+                              : "当前为仅本地模式：关闭顶部“仅本地规则”后才能请求云端辅助。"}
+                          </p>
+                        )}
                         {diagnoseError && (
                           <p role="alert" className="dc-tone-danger dc-tone-bg dc-tone-border dc-tone-text rounded-lg border px-3 py-2 text-xs leading-relaxed">
                             {diagnoseError}
@@ -1632,6 +1935,8 @@ export default function App() {
           onNavigate={navigateDrawer}
           position={drawerEntry ? { index: drawerIndex, total: drawerIds.length } : null}
           busy={busy || phase !== "ready"}
+          allEntries={judgedRef.current}
+          onScanSubdirectory={source === "local" ? handleScanSubdirectory : undefined}
         />
 
         <ConfirmQuarantineDialog

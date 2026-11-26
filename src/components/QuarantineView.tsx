@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 import { QUARANTINE_TTL_DAYS } from "@/src/core/constants";
 import type { QuarantineRecord, ScanSource } from "@/src/core/types";
 import { EmptyState } from "./States";
-import { Meter, SizeValue, formatDateTime } from "./shared";
+import { Meter, SizeValue, formatBytes, formatDateTime } from "./shared";
 
 export interface QuarantineViewProps {
   records: QuarantineRecord[];
@@ -27,6 +27,8 @@ export interface QuarantineViewProps {
   busyId?: string | null;
   /** 全局操作进行中：禁止重复提交 */
   busy?: boolean;
+  /** 清空隔离区正在进行，单独显示进度与防止重复点击 */
+  clearing?: boolean;
   source?: ScanSource | null;
 }
 
@@ -51,6 +53,7 @@ export function QuarantineView({
   onClearAll,
   busyId = null,
   busy: globalBusy = false,
+  clearing = false,
   source = null,
 }: QuarantineViewProps) {
   const [deleteTarget, setDeleteTarget] = useState<QuarantineRecord | null>(null);
@@ -105,13 +108,21 @@ export function QuarantineView({
           variant="outline"
           size="sm"
           onClick={() => { setClearAck(false); setClearOpen(true); }}
-          disabled={active.length === 0 || globalBusy}
+          disabled={active.length === 0 || globalBusy || clearing}
+          aria-busy={clearing || undefined}
           className="dc-tone-danger dc-tone-text hover:dc-tone-bg"
         >
-          <Trash2 aria-hidden />
-          清空隔离区
+          {clearing ? <Spinner /> : active.length === 0 ? <Check aria-hidden /> : <Trash2 aria-hidden />}
+          {clearing ? "正在清空…" : active.length === 0 ? "隔离区已清空" : "清空隔离区"}
         </Button>
       </div>
+
+      {clearing && (
+        <p role="status" className="dc-panel dc-tone-info flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs">
+          <Spinner className="size-3.5" />
+          正在删除隔离内容并刷新清单，请勿重复点击；失败时会恢复按钮并保留现有记录。
+        </p>
+      )}
 
       <p className="dc-panel dc-rail dc-tone-review flex items-start gap-2 rounded-xl px-4 py-3 text-xs leading-relaxed text-muted-foreground">
         <TriangleAlert aria-hidden className="dc-tone-text mt-0.5 size-4 shrink-0" />
@@ -266,29 +277,65 @@ export function QuarantineView({
       </AlertDialog>
 
       <AlertDialog open={clearOpen} onOpenChange={(open) => { setClearOpen(open); if (!open) setClearAck(false); }}>
-        <AlertDialogContent className="dc-panel dc-tone-danger rounded-xl">
-          <AlertDialogHeader>
-            <AlertDialogTitle className="dc-display tracking-wide">清空隔离区？</AlertDialogTitle>
-            <AlertDialogDescription>
-              {active.length} 项、共 <SizeValue bytes={activeBytes} /> 将被永久删除，无法还原。
-              操作记录与恢复说明作为审计历史保留，不会随之抹掉。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <label className="flex items-start gap-2 rounded-lg border border-hairline px-3 py-2 text-xs leading-relaxed">
-            <Checkbox
-              checked={clearAck}
-              onCheckedChange={(v) => setClearAck(v === true)}
-              className="mt-0.5"
-            />
-            我已确认这些内容不再需要，并知晓浏览器数据清除、存储回收或磁盘变动可能让隔离内容提前丢失、无法恢复。
-          </label>
-          <AlertDialogFooter>
+        <AlertDialogContent
+          data-clear-quarantine-dialog
+          overlayClassName="bg-black/75 backdrop-blur-[2px]"
+          className="dc-panel dc-tone-danger flex max-h-[calc(100dvh-1rem)] w-[calc(100%-1rem)] flex-col gap-0 overflow-hidden rounded-xl border-danger/55 p-0 shadow-2xl"
+        >
+          <div aria-hidden className="h-1.5 shrink-0 bg-gradient-to-r from-danger via-destructive to-danger" />
+
+          <div className="shrink-0 px-5 pt-5 pb-3">
+            <AlertDialogHeader className="place-items-start gap-2.5 text-left">
+              <div className="flex items-start gap-3">
+                <span className="dc-tone-danger dc-tone-bg dc-tone-border grid size-11 shrink-0 place-content-center rounded-full border">
+                  <TriangleAlert aria-hidden className="dc-tone-text size-5" />
+                </span>
+                <div className="grid gap-1">
+                  <AlertDialogTitle className="dc-display dc-tone-danger dc-tone-text text-xl tracking-wide">
+                    清空隔离区？
+                  </AlertDialogTitle>
+                  <p className="dc-label dc-tone-danger dc-tone-text">永久删除 · 无法还原</p>
+                </div>
+              </div>
+              <AlertDialogDescription className="text-sm leading-relaxed text-muted-foreground">
+                将永久删除{" "}
+                <strong className="dc-tone-danger dc-tone-text">
+                  {active.length} 项，共 {formatBytes(activeBytes)}
+                </strong>
+                ，无法再还原。操作记录与恢复说明作为审计历史保留，不会随之抹掉。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+          </div>
+
+          <div data-clear-quarantine-scroll className="min-h-0 flex-1 overflow-y-auto px-5 pb-3">
+            <div
+              data-clear-quarantine-warning
+              className="dc-tone-danger dc-tone-bg dc-tone-border flex items-start gap-2 rounded-lg border px-3 py-2.5 text-xs leading-relaxed"
+            >
+              <TriangleAlert aria-hidden className="dc-tone-text mt-0.5 size-4 shrink-0" />
+              <span>
+                <strong className="dc-tone-text">这是不可恢复操作。</strong>
+                删除后没有回收站，也没有 7 天保留期；浏览器数据清除、存储回收或磁盘变动还可能让隔离内容更早丢失。
+              </span>
+            </div>
+            <label className="mt-3 flex items-start gap-2 rounded-lg border border-danger/30 px-3 py-2.5 text-xs leading-relaxed">
+              <Checkbox
+                checked={clearAck}
+                onCheckedChange={(v) => setClearAck(v === true)}
+                className="mt-0.5"
+              />
+              我已确认这些内容不再需要，并知晓删除后无法恢复，也不能从备份之外找回。
+            </label>
+          </div>
+
+          <AlertDialogFooter className="shrink-0 border-t border-danger/25 bg-background/50 px-5 py-4">
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               disabled={!clearAck}
               onClick={() => { onClearAll(); setClearOpen(false); }}
             >
+              <Trash2 aria-hidden />
               全部彻底删除
             </AlertDialogAction>
           </AlertDialogFooter>

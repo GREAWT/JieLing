@@ -48,6 +48,7 @@ export async function runScan(
   let currentPath = "";
   let truncated = false;
   let stopped = false;
+  let rootCoverage: ScanCoverage[] | undefined;
 
   const progress = (phase: ScanProgress["phase"]): ScanProgress => ({
     phase,
@@ -56,6 +57,7 @@ export async function runScan(
     currentPath,
     truncated,
     ...(stopped ? { stopped: true } : {}),
+    ...(rootCoverage ? { rootCoverage } : {}),
   });
 
   const flush = (): void => {
@@ -75,7 +77,12 @@ export async function runScan(
     if (isCancelled()) throw new ScanCancelledError();
   };
 
-  async function scanDir(dirHandle: FileSystemDirectoryHandle, dirPath: string, childDepth: number): Promise<DirAggregate> {
+  async function scanDir(
+    dirHandle: FileSystemDirectoryHandle,
+    dirPath: string,
+    childDepth: number,
+    isRoot = false,
+  ): Promise<DirAggregate> {
     const agg: DirAggregate = {
       size: 0,
       fileCount: 0,
@@ -178,6 +185,9 @@ export async function runScan(
       }
     } catch (err) {
       if (err instanceof ScanCancelledError || isCancelled()) throw err;
+      if (isRoot && visitedCount === 0) {
+        throw new Error(`无法读取所选目录，可能没有读取权限或目录已被移动：${err instanceof Error ? err.message : String(err)}`);
+      }
       // 目录枚举中途失去权限：保留已发现内容，标记部分覆盖，不把失败伪装成空目录
       agg.coverage.add("permission_partial");
     }
@@ -187,7 +197,8 @@ export async function runScan(
   try {
     emit({ type: "batch", entries: [], progress: progress("scanning") });
     // junction/符号链接可能造出无限深的新路径，visited 去重 + maxDepth 兜底
-    await scanDir(root, "", 0);
+    const rootAgg = await scanDir(root, "", 0, true);
+    if (rootAgg.coverage.size > 0) rootCoverage = directoryCoverage(rootAgg.coverage);
     checkCancelled();
     flush();
     emit({ type: "done", progress: progress("ready") });
