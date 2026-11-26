@@ -19,10 +19,33 @@ export interface RawRule {
   reason: string;
   consequence: string;
   revival: string[];
+  software?: string;
+  vendor?: string;
+  aliases?: string[];
+  platforms?: string[];
+  installPaths?: string[];
+  cachePaths?: string[];
+  logPaths?: string[];
+  configPaths?: string[];
+  userDataPaths?: string[];
+  processNames?: string[];
+  uninstallSignatures?: string[];
+  fileTypes?: string[];
+  protectMarkers?: string[];
+  protectVerdict?: "needs_review" | "keep_locked";
+  role?: string;
+  ruleVersion?: string;
+  verifiedAt?: string;
+  sampleCache?: string;
+  sampleReview?: string;
+  sampleProtect?: string;
+  sampleNegative?: string;
 }
 
 export interface RuleBundle {
   version: number;
+  ruleSetVersion?: string;
+  verifiedAt?: string;
   rules: RawRule[];
 }
 

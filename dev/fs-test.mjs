@@ -365,9 +365,13 @@ try {
     const hit = {
       fingerprintId: "cache", owner: "App", ownerKind: "app", purpose: "cache", verdict: "safe_delete",
       confidence: 0.95, rebuildable: true, reason: "reviewed rule", consequence: "rebuild", revival: [], evidence: [],
-      source: "fingerprint",
+      source: "builtin", trustLevel: 1, ruleScope: "software_fingerprint", ruleVersion: "4",
+      verifiedAt: "2026-11-26", enabled: true, originDescription: "测试用人工审查规则",
     };
-    const aiHit = { ...hit, source: "ai" };
+    const aiHit = {
+      ...hit, source: "ai_candidate", trustLevel: 3,
+      originDescription: "测试用 AI 候选，仅本次有效",
+    };
     const fingerprint = judgeAll([{ ...base, id: "fp" }], new Map([["fp", hit]]))[0];
     const ai = judgeAll([{ ...base, id: "ai" }], new Map([["ai", aiHit]]))[0];
     check("reviewed fingerprint may recommend quarantine", fingerprint.verdict === "safe_delete", fingerprint.verdict);
@@ -394,10 +398,10 @@ try {
 
   {
     const { rootHandle, entry } = await singleFileEntry();
-    const aiSafe = { ...entry, verdict: "safe_delete", source: "ai" };
+    const aiSafe = { ...entry, verdict: "safe_delete", source: "ai_candidate" };
     check("canQuarantine rejects AI safe_delete", canQuarantineEntry(aiSafe).allowed === false);
     await rejects("core layer rejects AI safe_delete", () => quarantineEntries(rootHandle, [aiSafe]));
-    const noFingerprint = { ...entry, verdict: "safe_delete", source: "fingerprint", hit: null };
+    const noFingerprint = { ...entry, verdict: "safe_delete", source: "builtin", hit: null };
     check("canQuarantine rejects safe_delete without a reviewed fingerprint",
       canQuarantineEntry(noFingerprint).allowed === false);
     await rejects("core layer rejects safe_delete without a fingerprint", () =>

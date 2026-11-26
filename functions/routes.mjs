@@ -151,15 +151,20 @@ export function application({ db, BackendError, ai: aiOverride }) {
   }
 
   async function readKnowledge(fingerprints) {
+    const ttlMs = 30 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
     const found = await Promise.all(fingerprints.map(async (fp) => {
       const result = rows(await db.from('knowledge')
-        .select('fingerprint,subject,owner,owner_kind,purpose,verdict,confidence,rebuildable,reason,consequence,revival,evidence,origin')
+        .select('fingerprint,subject,owner,owner_kind,purpose,verdict,confidence,rebuildable,reason,consequence,revival,evidence,origin,updated_at')
         .eq('fingerprint', fp).limit(1));
       return result?.length ? result[0] : null;
     }));
     const map = new Map();
     for (const row of found) {
       if (!row) continue;
+      const updatedAt = Date.parse(row.updated_at ?? '');
+      // 过期缓存按未命中处理并重新请求模型；缓存不是正式规则。
+      if (!Number.isFinite(updatedAt) || now - updatedAt > ttlMs) continue;
       let revival = [];
       let evidence = [];
       try { revival = JSON.parse(row.revival); } catch { revival = []; }
@@ -177,37 +182,14 @@ export function application({ db, BackendError, ai: aiOverride }) {
         revival: Array.isArray(revival) ? revival : [],
         evidence: Array.isArray(evidence) ? evidence : [],
         origin: 'cache',
+        verifiedAt: row.updated_at,
       });
     }
     return map;
   }
 
-  async function writeKnowledge(item, fp, judgment) {
-    const inserted = rows(await db.from('knowledge').insertIfAbsent({
-      fingerprint: fp,
-      subject: item.name.slice(0, 200),
-      owner: judgment.owner,
-      owner_kind: judgment.ownerKind,
-      purpose: judgment.purpose,
-      verdict: judgment.verdict,
-      confidence: Math.round(judgment.confidence * 100),
-      rebuildable: judgment.rebuildable,
-      reason: judgment.reason,
-      consequence: judgment.consequence,
-      revival: JSON.stringify(judgment.revival),
-      evidence: JSON.stringify(judgment.evidence),
-      origin: 'ai',
-      hit_count: 1,
-      version: 1,
-    }, { onConflict: 'fingerprint' }).select('fingerprint'));
-    if (inserted?.length) return;
-    // Best-effort popularity counter; a lost race must not fail the request.
-    const found = rows(await db.from('knowledge').select('hit_count,version').eq('fingerprint', fp).limit(1));
-    if (!found?.length) return;
-    await db.from('knowledge')
-      .update({ hit_count: Number(found[0].hit_count) + 1, version: Number(found[0].version) + 1 })
-      .eq('fingerprint', fp).eq('version', Number(found[0].version));
-  }
+  // AI 结果只作为本次响应返回；候选规则由用户在本机审核后保存。
+  // 不再把 AI 判定自动写入共享知识库，也不跨用户同步。
 
   function aiMetadata() {
     try {
@@ -264,7 +246,6 @@ export function application({ db, BackendError, ai: aiOverride }) {
               const entry = byKey.get(answer.key);
               if (!entry) continue;
               judgments.push({ ...answer, fingerprint: entry.fp, origin: 'ai' });
-              await writeKnowledge(entry.item, entry.fp, answer);
             }
           } catch (error) {
             const mapped = publicError(error);

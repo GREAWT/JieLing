@@ -12,6 +12,7 @@ const server = await createServer({
   resolve: { alias: { "@": root } },
   appType: "custom",
   cacheDir: fileURLToPath(new URL("../.vite-fs", import.meta.url)),
+  optimizeDeps: { noDiscovery: true },
   server: { middlewareMode: true },
 });
 

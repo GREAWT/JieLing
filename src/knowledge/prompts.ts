@@ -224,5 +224,12 @@ export function parseAiJudgment(text: string): KnowledgeHit | null {
     consequence,
     revival,
     evidence,
+    source: "ai_candidate",
+    trustLevel: 3,
+    ruleScope: "software_fingerprint",
+    ruleVersion: "1",
+    verifiedAt: new Date().toISOString().slice(0, 10),
+    enabled: true,
+    originDescription: "AI 辅助推断，待人工核对；未使用联网检索",
   };
 }

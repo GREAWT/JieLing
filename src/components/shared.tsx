@@ -1,6 +1,7 @@
 import { useId, type ReactNode } from "react";
 import {
   AppWindow,
+  BookmarkCheck,
   Database,
   Fingerprint,
   HelpCircle,
@@ -202,10 +203,11 @@ export function EntrySemanticBadges({ mechanisms, rebuildable }: { mechanisms: R
 }
 
 const SOURCE_META = {
-  fingerprint: { label: "本地规则", Icon: Fingerprint, tone: "dc-tone-info" },
-  ai: { label: "AI 辅助分析", Icon: Sparkles, tone: "dc-tone-ai" },
-  cache: { label: "共享判定缓存", Icon: Database, tone: "dc-tone-locked" },
-  heuristic: { label: "启发式", Icon: Ruler, tone: "dc-tone-locked" },
+  builtin: { label: "人工内置规则", Icon: Fingerprint, tone: "dc-tone-info" },
+  custom: { label: "我的规则", Icon: BookmarkCheck, tone: "dc-tone-safe" },
+  ai_candidate: { label: "AI 候选", Icon: Sparkles, tone: "dc-tone-ai" },
+  cloud_cache: { label: "云端缓存", Icon: Database, tone: "dc-tone-locked" },
+  heuristic: { label: "弱启发式", Icon: Ruler, tone: "dc-tone-locked" },
 } as const;
 
 export function SourceTag({

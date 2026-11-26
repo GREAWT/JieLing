@@ -53,6 +53,19 @@ PowerShell 以普通权限运行；只有用户主动选择提升权限时，才
 `skipped_children`、`permission_partial`、`cancelled`。任何非完整状态都传播到祖先，
 这些目录禁止整体隔离；全局截断或手动停止后，不得继续批量勾选目录。
 
+## 规则信任层级
+
+系统/用户保护 > 人工内置规则 > 用户自定义规则 > AI 候选 > 云端缓存 > 弱启发式。
+命中冲突时先取更保守结论，再按信任层级决定依据来源：
+
+- `builtin`：Markdown 人工审查、构建时只读编译进 `fingerprints.json`。
+- `custom`：用户明确创建，保存在本机 IndexedDB；精确目录规则默认绑定当前目录。
+- `ai_candidate`：AI 结构化候选，默认只在本次有效、最高显示 `needs_review`，重启后仍需审核。
+- `cloud_cache`：只减少重复云端请求，不是正式规则，不能产生 `safe_delete`。
+- `heuristic`：名称/扩展名等弱线索，只能进入 `needs_review`。
+
+AI 候选不得自动写入共享知识库；用户创建通用规则必须至少有名称＋标志文件/同级结构中的两类独立证据。只有名称匹配的通用规则不得成为 `safe_delete`。
+
 硬锁定位置（即使上游判定错误也必须拦住）：`Windows`、`System32`、`SysWOW64`、`WinSxS`、
 `Boot`、`Recovery`、`EFI`、`$Recycle.Bin`、`System Volume Information`、
 `pagefile.sys`、`hiberfil.sys`、`swapfile.sys`、`bootmgr`、`ntuser.dat`。

@@ -13,6 +13,30 @@ export type ScanCoverage =
 
 export type Verdict = "safe_delete" | "needs_review" | "keep_locked";
 
+export type RuleSource = "builtin" | "custom" | "ai_candidate" | "cloud_cache" | "heuristic";
+
+export type RuleScope = "exact_path" | "software_fingerprint";
+
+export type RuleRole =
+  | "rebuildable_cache"
+  | "configuration"
+  | "log"
+  | "update_residue"
+  | "user_data"
+  | "protected_data";
+
+export interface RuleMetadata {
+  source: RuleSource;
+  /** 数值越小优先级越高：保护 0 > 内置 1 > 自定义 2 > AI候选 3 > 云端缓存 4 > 启发式 5 */
+  trustLevel: number;
+  ruleScope: RuleScope;
+  ruleVersion: string;
+  evidence: string[];
+  verifiedAt: string;
+  enabled: boolean;
+  originDescription: string;
+}
+
 export type OwnerKind = "app" | "system" | "dev_tool" | "cache" | "unknown";
 
 export type RevivalMechanism =
@@ -40,7 +64,7 @@ export interface ScanEntry {
   coverage: ScanCoverage[];
 }
 
-export interface KnowledgeHit {
+export interface KnowledgeHit extends RuleMetadata {
   fingerprintId: string;
   owner: string;
   ownerKind: OwnerKind;
@@ -51,9 +75,6 @@ export interface KnowledgeHit {
   reason: string;
   consequence: string;
   revival: RevivalMechanism[];
-  evidence: string[];
-  /** 缺省视为经过审查的本地指纹；ai/cache 不能产生 safe_delete */
-  source?: "fingerprint" | "ai" | "cache";
 }
 
 export interface JudgedEntry extends ScanEntry {
@@ -63,7 +84,7 @@ export interface JudgedEntry extends ScanEntry {
   priority: number;
   locked: boolean;
   lockReason?: string;
-  source: "fingerprint" | "ai" | "cache" | "heuristic";
+  source: RuleSource;
 }
 
 export interface OwnerGroup {
@@ -269,4 +290,90 @@ export interface CleanupAction {
   selected: boolean;
   evidenceId?: string;
   source?: "local_evidence";
+}
+
+export interface LocalRuleMatch {
+  name: string;
+  markers: string[];
+  siblings: string[];
+}
+
+export interface LocalRule {
+  schemaVersion: 1;
+  id: string;
+  source: "custom";
+  enabled: boolean;
+  ruleScope: RuleScope;
+  rootHash: string;
+  matchPath: string;
+  kind: EntryKind;
+  software: string;
+  vendor: string;
+  owner: string;
+  ownerKind: OwnerKind;
+  purpose: string;
+  role: RuleRole;
+  verdict: Verdict;
+  confidence: number;
+  rebuildable: boolean;
+  reason: string;
+  consequence: string;
+  revival: RevivalMechanism[];
+  evidence: string[];
+  match: LocalRuleMatch;
+  ruleVersion: string;
+  verifiedAt: string;
+  originDescription: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type CandidateStatus = "pending" | "session_only" | "rejected" | "approved";
+
+export interface RuleCandidate {
+  schemaVersion: 1;
+  id: string;
+  status: CandidateStatus;
+  source: "ai_candidate";
+  rootHash: string;
+  scanPath: string;
+  scanName: string;
+  kind: EntryKind;
+  size: number;
+  fileCount: number;
+  childNames: string[];
+  siblingNames: string[];
+  software: string;
+  vendor: string;
+  ownerKind: OwnerKind;
+  purpose: string;
+  role: RuleRole;
+  reason: string;
+  consequence: string;
+  confidence: number;
+  aiVerdict: Verdict;
+  revival: RevivalMechanism[];
+  evidence: string[];
+  suggestedScope: RuleScope;
+  genericReady: boolean;
+  searchUsed: boolean;
+  sources: string[];
+  model: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface RuleRevision {
+  version: number;
+  at: number;
+  reason: string;
+  rules: LocalRule[];
+}
+
+export interface RulePack {
+  schemaVersion: 1;
+  rulesVersion: number;
+  exportedAt: number;
+  checksum: string;
+  rules: LocalRule[];
 }

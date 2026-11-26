@@ -18,11 +18,21 @@ const REVIVALS = new Set([
   "driver_protected",
 ]);
 const KINDS = new Set(["directory", "file", "any"]);
-const LIST_FIELDS = new Set(["name", "glob", "pathContains", "markers", "siblings"]);
+const ROLES = new Set(["rebuildable_cache", "configuration", "log", "update_residue", "user_data", "protected_data"]);
+const LIST_FIELDS = new Set([
+  "name", "glob", "pathContains", "markers", "siblings", "protectMarkers",
+  "aliases", "platforms", "installPaths", "cachePaths", "logPaths", "configPaths",
+  "userDataPaths", "processNames", "uninstallSignatures", "fileTypes",
+]);
 const BOOL_FIELDS = new Set(["empty", "requireMarkers", "requireSiblings", "rebuildable"]);
-const TEXT_FIELDS = new Set(["owner", "ownerKind", "purpose", "verdict", "reason", "consequence", "revival", "kind", "pathRegex", "confidence"]);
+const TEXT_FIELDS = new Set([
+  "owner", "ownerKind", "purpose", "verdict", "reason", "consequence", "revival",
+  "kind", "pathRegex", "confidence", "software", "vendor", "protectVerdict", "role",
+  "ruleVersion", "verifiedAt", "sampleCache", "sampleReview", "sampleProtect", "sampleNegative",
+]);
 const KNOWN_FIELDS = new Set([...LIST_FIELDS, ...BOOL_FIELDS, ...TEXT_FIELDS]);
 const REQUIRED_FIELDS = ["owner", "ownerKind", "purpose", "verdict", "confidence", "rebuildable", "reason", "consequence", "revival"];
+const WEAK_NAMES = new Set(["cache", "temp", "tmp", "logs", "log", "downloads", "files", "data", "backup", "backups"]);
 
 const errors = [];
 
@@ -99,7 +109,7 @@ function compileRule(raw) {
       fail(id, __file, `字段 "${field}" 列表为空`);
       continue;
     }
-    if (field === "glob" || field === "markers" || field === "siblings") {
+    if (field === "glob" || field === "markers" || field === "siblings" || field === "protectMarkers") {
       for (const pattern of items) {
         try {
           new RegExp(globToRegExpSource(pattern), "i");
@@ -168,8 +178,49 @@ function compileRule(raw) {
     }
     rule[field] = raw[field];
   }
+  for (const field of [
+    "software", "vendor", "ruleVersion", "verifiedAt", "sampleCache", "sampleReview", "sampleProtect", "sampleNegative",
+  ]) {
+    if (raw[field] !== undefined) rule[field] = raw[field];
+  }
   if (raw.ownerKind !== undefined) rule.ownerKind = raw.ownerKind;
   if (raw.verdict !== undefined) rule.verdict = raw.verdict;
+
+  if (raw.role !== undefined) {
+    if (!ROLES.has(raw.role)) fail(id, __file, `role 非法: ${raw.role}`);
+    else rule.role = raw.role;
+  }
+  if (raw.protectVerdict !== undefined) {
+    if (raw.protectVerdict !== "needs_review" && raw.protectVerdict !== "keep_locked") {
+      fail(id, __file, `protectVerdict 只能是 needs_review 或 keep_locked`);
+    } else {
+      rule.protectVerdict = raw.protectVerdict;
+    }
+  }
+  if (rule.protectVerdict && !rule.protectMarkers) {
+    fail(id, __file, "protectVerdict 需要同时提供 protectMarkers");
+  }
+
+  const sampleFields = ["sampleCache", "sampleReview", "sampleProtect", "sampleNegative"];
+  const sampleCount = sampleFields.filter((field) => rule[field] !== undefined).length;
+  if (sampleCount > 0) {
+    if (sampleCount !== 4) fail(id, __file, "四种回归样本必须同时提供");
+    for (const field of ["software", "vendor"]) {
+      if (!rule[field]) fail(id, __file, `提供回归样本的规则必须填写 ${field}`);
+    }
+    if (!rule.platforms || rule.platforms.length === 0) fail(id, __file, "提供回归样本的规则必须填写 platforms");
+    if (!rule.role) fail(id, __file, "提供回归样本的规则必须填写 role");
+    if (rule.sampleCache === rule.sampleNegative) fail(id, __file, "正向缓存样本不能与反向样本相同");
+  }
+
+  if (rule.verdict === "safe_delete") {
+    const onlyGenericName = rule.name && rule.name.some((name) => WEAK_NAMES.has(name.toLowerCase()))
+      && !rule.glob && !rule.pathContains && !rule.pathRegex && !rule.empty
+      && !(rule.markers && rule.requireMarkers) && !(rule.siblings && rule.requireSiblings);
+    if (onlyGenericName) {
+      fail(id, __file, "不得仅通过 cache/temp/logs/downloads 等通用目录名创建全局推荐隔离规则");
+    }
+  }
 
   const hasBaseMatcher =
     rule.name || rule.glob || rule.pathContains || rule.pathRegex || rule.empty === true ||
@@ -219,6 +270,11 @@ if (errors.length > 0) {
 }
 
 compiled.sort((a, b) => a.id.localeCompare(b.id));
-const bundle = { version: 1, rules: compiled };
+const bundle = {
+  version: 2,
+  ruleSetVersion: "2026.11.4",
+  verifiedAt: "2026-11-26",
+  rules: compiled,
+};
 writeFileSync(outFile, JSON.stringify(bundle, null, 2) + "\n", "utf8");
 console.log(`\n共 ${compiled.length} 条规则，已写入 ${outFile}`);

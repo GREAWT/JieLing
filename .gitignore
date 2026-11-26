@@ -13,5 +13,4 @@ dist/
 public/skill/
 
 # 测试用 Vite 缓存
-.vite-fs/
-.vite-app/
+.vite-*/

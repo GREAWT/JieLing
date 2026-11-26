@@ -1,12 +1,26 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const ROOT = new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
-const VITE_PORT = 5199;
-const DEBUG_PORT = 9339;
+
+async function getFreePort() {
+  return await new Promise((resolve, reject) => {
+    const server = createNetServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close(() => port ? resolve(port) : reject(new Error("无法分配测试端口")));
+    });
+  });
+}
+
+const VITE_PORT = await getFreePort();
+const DEBUG_PORT = await getFreePort();
 const BASE_URL = `http://127.0.0.1:${VITE_PORT}/`;
 
 function findBrowser() {
@@ -39,7 +53,7 @@ function delay(ms) {
 }
 
 async function terminate(child) {
-  if (!child || child.exitCode !== null) return;
+  if (!child) return;
   if (process.platform === "win32") {
     await new Promise((resolve) => {
       const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
@@ -48,7 +62,25 @@ async function terminate(child) {
     });
     return;
   }
-  child.kill("SIGTERM");
+  if (child.exitCode === null) child.kill("SIGTERM");
+}
+
+function terminateBrowserProfile(profile) {
+  if (process.platform !== "win32") return;
+  const escaped = profile.replace(/'/g, "''");
+  const script = [
+    `Get-CimInstance Win32_Process`,
+    `| Where-Object { $_.Name -in @('msedge.exe','chrome.exe') -and $_.CommandLine -like '*${escaped}*' }`,
+    `| ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+  ].join(" ");
+  try {
+    execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      stdio: "ignore",
+      timeout: 15_000,
+    });
+  } catch {
+    // Cleanup is best-effort; the throwaway profile must not mask the test result.
+  }
 }
 
 class Cdp {
@@ -131,7 +163,7 @@ async function main() {
   const browserPath = findBrowser();
   if (!browserPath) throw new Error("未找到 Chrome/Edge，无法运行演示模式浏览器闭环测试。");
   const profile = await mkdtemp(join(tmpdir(), "dareclean-e2e-"));
-  const vite = spawn(process.execPath, ["node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", String(VITE_PORT)], {
+  const vite = spawn(process.execPath, ["node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", String(VITE_PORT), "--strictPort"], {
     cwd: ROOT,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -369,8 +401,11 @@ async function main() {
     await cdp.waitFor(`(() => {
       const region = document.querySelector('[data-region="knowledge"]');
       return Boolean(region && region.textContent.includes('可审查的本地判定规则')
-        && region.textContent.includes('规则分类（7 类）'));
-    })()`, "规则页拆分后正常挂载");
+        && region.textContent.includes('8 个分类')
+        && region.textContent.includes('我的规则')
+        && region.textContent.includes('待审核候选')
+        && region.textContent.includes('更新记录'));
+    })()`, "规则页分层区块正常挂载");
     await cdp.mouseClick(
       `[...document.querySelectorAll('[data-region="knowledge"] button')]
         .find((item) => item.textContent.includes('技术实现与开发者扩展'))`,
@@ -381,12 +416,86 @@ async function main() {
       "规则页下载链接",
     );
 
+    const candidateSeed = await cdp.evaluate(`(async () => {
+      const store = await import('/src/knowledge/local-store.ts');
+      const repo = store.createRuleRepository();
+      const rootHash = await store.hashRootLabel('演示模式（模拟数据）');
+      const now = Date.now();
+      await repo.saveCandidates([{
+        schemaVersion: 1,
+        id: 'cand_e2e_persist_001',
+        status: 'pending',
+        source: 'ai_candidate',
+        rootHash,
+        scanPath: 'E2E/PersistentCandidate',
+        scanName: 'PersistentCandidate',
+        kind: 'directory',
+        size: 123,
+        fileCount: 1,
+        childNames: ['marker.bin'],
+        siblingNames: [],
+        software: 'Persistent候选软件',
+        vendor: '未确认',
+        ownerKind: 'app',
+        purpose: '端到端候选持久化测试目录',
+        role: 'rebuildable_cache',
+        reason: '该候选仅用于验证重启后仍需审核，不代表真实模型结论。',
+        consequence: '不会产生可执行动作。',
+        confidence: 0.8,
+        aiVerdict: 'safe_delete',
+        revival: [],
+        evidence: ['候选持久化测试证据'],
+        suggestedScope: 'exact_path',
+        genericReady: true,
+        searchUsed: false,
+        sources: [],
+        model: null,
+        createdAt: now,
+        updatedAt: now,
+      }]);
+      return { customRules: (await repo.listCustom()).length, candidates: (await repo.listCandidates()).length };
+    })()`);
+    if (candidateSeed.customRules !== 0 || candidateSeed.candidates !== 1) {
+      throw new Error(`候选初始持久化状态错误：${JSON.stringify(candidateSeed)}`);
+    }
+
+    await cdp.send('Page.reload', { ignoreCache: true });
+    await cdp.waitFor("document.body.textContent.includes('进入演示模式')", "重启后的首页", 60_000);
+    await cdp.evaluate(`(() => {
+      const button = [...document.querySelectorAll('button')].find((item) => item.textContent.includes('进入演示模式'));
+      if (!button) throw new Error('重启后找不到进入演示模式按钮');
+      button.click();
+      return true;
+    })()`);
+    await cdp.waitFor("document.body.textContent.includes('扫描完成')", "重启后扫描完成", 120_000);
+    await cdp.mouseClick(
+      `[...document.querySelectorAll('[role=tab]')].find((item) => item.textContent.includes('判定规则'))`,
+      "重启后的判定规则标签",
+    );
+    await cdp.waitFor("document.body.textContent.includes('Persistent候选软件')", "重启后候选仍需审核", 30_000);
+    await cdp.mouseClick(
+      `[...document.querySelectorAll('button')].find((item) => item.textContent.includes('创建精确目录规则'))`,
+      "创建精确目录规则按钮",
+    );
+    await cdp.waitFor(`(async () => {
+      const store = await import('/src/knowledge/local-store.ts');
+      const repo = store.createRuleRepository();
+      const rules = await repo.listCustom();
+      return rules.some((rule) => rule.software === 'Persistent候选软件' && rule.ruleScope === 'exact_path');
+    })()`, "用户审核后创建精确规则", 30_000);
+    await cdp.waitFor("document.body.textContent.includes('我的规则') && document.body.textContent.includes('Persistent候选软件')",
+      "我的规则界面显示新规则", 30_000);
+
     if (cdp.errors.length > 0) throw new Error(`浏览器控制台错误：${cdp.errors.join(" | ")}`);
     console.log("PASS  演示模式闭环：生成 → 扫描 → 受保护抽屉 → 勾选 → 隔离 → 原位消失 → 还原 → 审计记录");
+    console.log("PASS  规则库持久化：AI候选重启后仍待审核 → 用户审核创建精确规则 → 我的规则可见");
   } finally {
+    try { await cdp?.send("Browser.close"); } catch { /* ignore */ }
     cdp?.close();
+    terminateBrowserProfile(profile);
     await terminate(browser);
     await terminate(vite);
+    await new Promise((resolve) => setTimeout(resolve, 300));
     await rm(profile, { recursive: true, force: true }).catch(() => undefined);
   }
 }

@@ -20,10 +20,11 @@
     "test:diagnose": "node dev/diagnose-test.mjs",
     "test:app": "node dev/app-test.mjs",
     "test:fs": "node dev/fs-test.mjs",
+    "test:rules": "node dev/rules-test.mjs",
     "test:ps": "node dev/ps-script-test.mjs",
     "test:ps:live": "node dev/ps-live-test.mjs",
     "test:e2e": "node dev/browser-e2e.mjs",
-    "verify": "npm run typecheck && npm run test:function && npm run test:diagnose && npm run test:app && npm run test:fs && npm run test:ps && npm run test:ps:live && npm run test:e2e && npm run build"
+    "verify": "npm run typecheck && npm run test:function && npm run test:diagnose && npm run test:app && npm run test:fs && npm run test:rules && npm run test:ps && npm run test:ps:live && npm run test:e2e && npm run build"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

@@ -316,6 +316,10 @@ function DrawerBody({
                   {hit.rebuildable ? "删除后可由软件自动重建。" : "删除后不会自动重建，需要时请从隔离区还原。"}
                   {hit.fingerprintId && <span className="dc-path ml-1 opacity-70">#{hit.fingerprintId}</span>}
                 </p>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {hit.originDescription} · {hit.ruleScope === "exact_path" ? "精确目录" : "软件结构"}
+                  · 版本 {hit.ruleVersion} · 验证于 {hit.verifiedAt} · 信任层级 {hit.trustLevel}
+                </p>
               </div>
             )}
           </div>

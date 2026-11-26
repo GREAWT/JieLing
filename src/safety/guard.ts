@@ -72,8 +72,8 @@ export function assertDeletable(entry: JudgedEntry): void {
 
 function untrustedSafeDelete(entry: JudgedEntry): boolean {
   return entry.verdict === "safe_delete"
-    && (entry.source === "ai" || entry.source === "cache"
-      || entry.hit?.source === "ai" || entry.hit?.source === "cache");
+    && (entry.source === "ai_candidate" || entry.source === "cloud_cache"
+      || entry.hit?.source === "ai_candidate" || entry.hit?.source === "cloud_cache");
 }
 
 function incompleteCoverage(entry: JudgedEntry): boolean {
@@ -111,11 +111,13 @@ export function canQuarantineEntry(entry: JudgedEntry): GuardDecision {
       matchedRule: "untrusted-safe-delete",
     };
   }
-  if (entry.verdict === "safe_delete" && (!entry.hit || entry.hit.verdict !== "safe_delete")) {
+  if (entry.verdict === "safe_delete" && (!entry.hit
+    || (entry.hit.source !== "builtin" && entry.hit.source !== "custom")
+    || entry.hit.verdict !== "safe_delete")) {
     return {
       allowed: false,
       locked: true,
-      reason: "「推荐隔离」只能来自经过审查的本地指纹；缺少指纹依据时禁止执行。",
+      reason: "「推荐隔离」只能来自经过审查的内置或自定义规则；缺少可信规则依据时禁止执行。",
       matchedRule: "safe-delete-without-fingerprint",
     };
   }

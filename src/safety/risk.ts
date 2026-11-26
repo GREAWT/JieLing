@@ -119,7 +119,7 @@ export function judgeEntry(entry: ScanEntry, hit: KnowledgeHit | null): JudgedEn
       priority: 0,
       locked: true,
       lockReason: guard.reason,
-      source: hit ? "fingerprint" : "heuristic",
+      source: hit ? hit.source : "heuristic",
     };
   }
 
@@ -132,8 +132,8 @@ export function judgeEntry(entry: ScanEntry, hit: KnowledgeHit | null): JudgedEn
     confidence = clamp(hit.confidence, 0, 1);
     // 低置信度的「可删」结论不足以支撑自动化，降档让人确认
     if (verdict === "safe_delete" && confidence < 0.5) verdict = "needs_review";
-    // 只有经过审查的本地指纹才能给出推荐隔离；AI 与共享缓存最多到「需要确认」
-    if (verdict === "safe_delete" && (hit.source === "ai" || hit.source === "cache")) {
+    // 只有经过审查的内置/自定义规则才能给出推荐隔离；AI 候选、缓存与启发式最多到「需要确认」
+    if (verdict === "safe_delete" && hit.source !== "builtin" && hit.source !== "custom") {
       verdict = "needs_review";
     }
     riskScore = clamp(
@@ -158,7 +158,7 @@ export function judgeEntry(entry: ScanEntry, hit: KnowledgeHit | null): JudgedEn
     riskScore,
     priority,
     locked: false,
-    source: hit ? "fingerprint" : "heuristic",
+    source: hit ? hit.source : "heuristic",
   };
 }
 

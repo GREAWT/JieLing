@@ -4,7 +4,7 @@
 import { application } from '../functions/routes.mjs';
 import { createCoordinator } from '../functions/coordinator.mjs';
 import { normalizeJudgment } from '../functions/ai.mjs';
-import { buildDiagnosePrompt, redactDiagnosisText } from '../functions/prompts.mjs';
+import { buildDiagnosePrompt, redactAncestors, redactDiagnosisText } from '../functions/prompts.mjs';
 
 class BackendError extends Error {
   constructor(code, status) { super(code); this.name = 'BackendError'; this.code = code; this.status = status; }
@@ -116,6 +116,38 @@ const item = (key, name, extra = {}) => ({
   fileCount: 12, dirCount: 2, sizeBytes: 4096, isEmpty: false, ...extra,
 });
 
+async function fingerprintOf(itemValue) {
+  const GUIDISH = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,}/gi;
+  const normalize = (value) => value.toLowerCase().replace(GUIDISH, '<id>').trim();
+  const ancestors = redactAncestors(itemValue.ancestors);
+  const parent = ancestors.length ? normalize(ancestors[ancestors.length - 1]) : '';
+  const dirs = [...new Set(itemValue.childDirs.map(normalize))].sort().slice(0, 10).join(',');
+  const exts = [...new Set(itemValue.childExts.map((ext) => ext.toLowerCase().replace(/^\./, '')))].sort().slice(0, 10).join(',');
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(
+    `${normalize(itemValue.name)}|${parent}|${dirs}|${exts}|${itemValue.isEmpty ? 'e' : 'f'}`,
+  ));
+  return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function knowledgeRow(fingerprint, updatedAt) {
+  return {
+    fingerprint,
+    subject: 'Cache',
+    owner: 'TestApp',
+    owner_kind: 'app',
+    purpose: '共享缓存里的测试判定',
+    verdict: 'needs_review',
+    confidence: 80,
+    rebuildable: true,
+    reason: '该行用于测试缓存命中，不代表真实模型结果。',
+    consequence: '测试缓存后果。',
+    revival: '[]',
+    evidence: '[]',
+    origin: 'ai',
+    updated_at: updatedAt,
+  };
+}
+
 let passed = 0; let failed = 0;
 function check(label, condition, detail) {
   if (condition) { passed += 1; console.log(`PASS  ${label}`); }
@@ -179,15 +211,36 @@ const call = makeApp(db);
   check('judge used AI once', aiCalls === before + 1);
   check('judge aiStatus ok', body.aiStatus === 'ok');
   check('judge unresolved empty', body.unresolved?.length === 0);
-  check('ancestors redacted in stored subject', db.tables.get('knowledge').every((r) => !JSON.stringify(r).includes('alice')));
+  check('AI results are not auto-written to shared knowledge', db.tables.get('knowledge').length === 0);
 }
 {
+  const fresh = new Date().toISOString();
+  const first = item('b1', 'SharedOne', { childDirs: ['CacheStorage'], childExts: ['.log'] });
+  const second = item('b2', 'SharedTwo', { childDirs: ['GPUCache'], childExts: ['.tmp'] });
+  db.ensure('knowledge').push(
+    knowledgeRow(await fingerprintOf(first), fresh),
+    knowledgeRow(await fingerprintOf(second), fresh),
+  );
   const before = aiCalls;
-  const res = await call('POST', '/api/judge', { items: [item('b1', 'Cache'), item('b2', 'GPUCache')] });
+  const res = await call('POST', '/api/judge', { items: [first, second] });
   const body = await res.json();
-  check('second call hits shared cache', body.cachedCount === 2, body);
-  check('cache avoids AI call', aiCalls === before);
-  check('cached origin labelled', body.judgments.every((j) => j.origin === 'cache'));
+  check('fresh shared cache hits without AI call', body.cachedCount === 2 && aiCalls === before, body);
+  check('cache origin labelled as cache', body.judgments.every((judgment) => judgment.origin === 'cache'));
+}
+{
+  const stale = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+  const first = item('c1', 'StaleOne', { childDirs: ['CacheStorage'], childExts: ['.old'] });
+  const second = item('c2', 'StaleTwo', { childDirs: ['GPUCache'], childExts: ['.old'] });
+  db.ensure('knowledge').push(
+    knowledgeRow(await fingerprintOf(first), stale),
+    knowledgeRow(await fingerprintOf(second), stale),
+  );
+  const before = aiCalls;
+  const beforeRows = db.tables.get('knowledge').length;
+  const res = await call('POST', '/api/judge', { items: [first, second] });
+  const body = await res.json();
+  check('expired shared cache is revalidated with AI', body.cachedCount === 0 && aiCalls === before + 1, body);
+  check('revalidation still does not write shared knowledge', db.tables.get('knowledge').length === beforeRows);
 }
 
 // --- conservative clamping (last line of defence) ---

@@ -124,7 +124,7 @@ export function groupByOwner(entries: JudgedEntry[]): OwnerGroup[] {
       selectableCount,
       maxPriority,
       revival: [...revival],
-      hasAiJudgment: groupEntries.some((e) => e.source === "ai"),
+      hasAiJudgment: groupEntries.some((e) => e.source === "ai_candidate" || e.source === "cloud_cache"),
     });
   }
   return groups;

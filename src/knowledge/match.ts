@@ -1,17 +1,29 @@
 import type {
   EntryKind,
   KnowledgeHit,
+  LocalRule,
   OwnerKind,
   RevivalMechanism,
+  RuleRole,
+  RuleScope,
+  RuleSource,
   ScanEntry,
   Verdict,
 } from "../core/types";
 import type { RawRule, RuleBundle } from "./types";
 import rawBundle from "./fingerprints.json" with { type: "json" };
+import { RULE_TRUST, VERDICT_SEVERITY } from "./rule-model";
 
 interface GlobPattern {
   re: RegExp;
   label: string;
+}
+
+export interface RuleSamples {
+  cache: string;
+  review: string;
+  protect: string;
+  negative: string;
 }
 
 export interface Fingerprint {
@@ -26,6 +38,8 @@ export interface Fingerprint {
   requireMarkers: boolean;
   siblings?: GlobPattern[];
   requireSiblings: boolean;
+  protectMarkers?: GlobPattern[];
+  protectVerdict?: "needs_review" | "keep_locked";
   owner: string;
   ownerKind: OwnerKind;
   purpose: string;
@@ -35,10 +49,26 @@ export interface Fingerprint {
   reason: string;
   consequence: string;
   revival: RevivalMechanism[];
+  source: RuleSource;
+  trustLevel: number;
+  ruleScope: RuleScope;
+  ruleVersion: string;
+  verifiedAt: string;
+  enabled: boolean;
+  originDescription: string;
+  software?: string;
+  vendor?: string;
+  aliases: string[];
+  platforms: string[];
+  role?: RuleRole;
+  samples?: RuleSamples;
 }
 
 const OWNER_KINDS = new Set<string>(["app", "system", "dev_tool", "cache", "unknown"]);
 const VERDICTS = new Set<string>(["safe_delete", "needs_review", "keep_locked"]);
+const ROLES = new Set<string>([
+  "rebuildable_cache", "configuration", "log", "update_residue", "user_data", "protected_data",
+]);
 const REVIVALS = new Set<string>([
   "autostart_service",
   "scheduled_task",
@@ -107,6 +137,16 @@ function compileRule(raw: RawRule): Fingerprint {
       throw new Error(`fingerprints.json 规则 ${id}: pathRegex 非法 ${source}`);
     }
   });
+  const role = raw.role ?? (
+    ownerKind === "system" ? "protected_data"
+      : ownerKind === "cache" ? "rebuildable_cache"
+        : raw.rebuildable ? "rebuildable_cache" : "user_data"
+  );
+  if (!ROLES.has(role)) throw new Error(`fingerprints.json 规则 ${id}: role 非法 ${role}`);
+  const sampleValues = [raw.sampleCache, raw.sampleReview, raw.sampleProtect, raw.sampleNegative];
+  if (sampleValues.some(Boolean) && !sampleValues.every(Boolean)) {
+    throw new Error(`fingerprints.json 规则 ${id}: 四种回归样本必须同时提供`);
+  }
   return {
     id,
     name: raw.name?.map((n) => n.toLowerCase()),
@@ -119,6 +159,9 @@ function compileRule(raw: RawRule): Fingerprint {
     requireMarkers: raw.requireMarkers === true,
     siblings: compileGlobs(raw.siblings, id, "siblings"),
     requireSiblings: raw.requireSiblings === true,
+    protectMarkers: compileGlobs(raw.protectMarkers, id, "protectMarkers"),
+    ...(raw.protectVerdict === "keep_locked" || raw.protectVerdict === "needs_review"
+      ? { protectVerdict: raw.protectVerdict } : {}),
     owner: requireText(raw.owner, id, "owner"),
     ownerKind: ownerKind as OwnerKind,
     purpose: requireText(raw.purpose, id, "purpose"),
@@ -128,6 +171,26 @@ function compileRule(raw: RawRule): Fingerprint {
     reason: requireText(raw.reason, id, "reason"),
     consequence: requireText(raw.consequence, id, "consequence"),
     revival: raw.revival as RevivalMechanism[],
+    source: "builtin",
+    trustLevel: RULE_TRUST.builtin,
+    ruleScope: "software_fingerprint",
+    ruleVersion: raw.ruleVersion ?? "2",
+    verifiedAt: raw.verifiedAt ?? "2026-11-26",
+    enabled: true,
+    originDescription: `人工审查的内置规则 · ${raw.owner}`,
+    software: raw.software ?? raw.owner,
+    vendor: raw.vendor,
+    aliases: raw.aliases ?? [],
+    platforms: raw.platforms ?? ["windows"],
+    role: role as RuleRole,
+    ...(sampleValues.every(Boolean) ? {
+      samples: {
+        cache: raw.sampleCache!,
+        review: raw.sampleReview!,
+        protect: raw.sampleProtect!,
+        negative: raw.sampleNegative!,
+      },
+    } : {}),
   };
 }
 
@@ -136,8 +199,8 @@ let cached: Fingerprint[] | null = null;
 export function loadFingerprints(): Fingerprint[] {
   if (cached) return cached;
   const bundle = rawBundle as unknown as RuleBundle;
-  if (!bundle || bundle.version !== 1 || !Array.isArray(bundle.rules)) {
-    throw new Error("fingerprints.json 结构非法：期望 { version: 1, rules: [...] }");
+  if (!bundle || (bundle.version !== 1 && bundle.version !== 2) || !Array.isArray(bundle.rules)) {
+    throw new Error("fingerprints.json 结构非法：期望 { version: 1|2, rules: [...] }");
   }
   const seen = new Set<string>();
   cached = bundle.rules.map((raw) => {
@@ -149,11 +212,62 @@ export function loadFingerprints(): Fingerprint[] {
   return cached;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** 自定义规则与内置规则共享同一匹配器，但来源、信任层级和作用域保持独立。 */
+export function compileLocalRules(rules: readonly LocalRule[], rootHash: string): Fingerprint[] {
+  const compiled: Fingerprint[] = [];
+  for (const rule of rules) {
+    if (!rule.enabled) continue;
+    if (rule.ruleScope === "exact_path" && rule.rootHash !== rootHash) continue;
+    const markers = rule.match.markers.map((label) => ({ re: globToRegExp(label), label }));
+    const siblings = rule.match.siblings.map((label) => ({ re: globToRegExp(label), label }));
+    compiled.push({
+      id: `custom:${rule.id}`,
+      name: rule.match.name ? [rule.match.name.toLowerCase()] : undefined,
+      ...(rule.ruleScope === "exact_path" ? {
+        pathRegex: [new RegExp(`^${escapeRegExp(rule.matchPath)}$`, "i")],
+      } : {}),
+      kind: rule.kind,
+      empty: false,
+      markers: markers.length > 0 ? markers : undefined,
+      requireMarkers: markers.length > 0,
+      siblings: siblings.length > 0 ? siblings : undefined,
+      requireSiblings: siblings.length > 0,
+      owner: rule.owner,
+      ownerKind: rule.ownerKind,
+      purpose: rule.purpose,
+      verdict: rule.verdict,
+      confidence: rule.confidence,
+      rebuildable: rule.rebuildable,
+      reason: rule.reason,
+      consequence: rule.consequence,
+      revival: [...rule.revival],
+      source: "custom",
+      trustLevel: RULE_TRUST.custom,
+      ruleScope: rule.ruleScope,
+      ruleVersion: rule.ruleVersion,
+      verifiedAt: rule.verifiedAt,
+      enabled: rule.enabled,
+      originDescription: rule.originDescription,
+      software: rule.software,
+      vendor: rule.vendor,
+      aliases: [],
+      platforms: ["windows"],
+      role: rule.role,
+    });
+  }
+  return compiled;
+}
+
 interface MatchResult {
   fp: Fingerprint;
   score: number;
   confidence: number;
   evidence: string[];
+  protectedVerdict?: "needs_review" | "keep_locked";
 }
 
 function globHits(patterns: GlobPattern[], names: string[]): { label: string; name: string }[] {
@@ -226,15 +340,42 @@ function evaluate(
   }
   if (evidence.length === 0) return null;
 
+  let protectedVerdict: "needs_review" | "keep_locked" | undefined;
+  if (fp.protectMarkers) {
+    const protectHits = globHits(fp.protectMarkers, childNames);
+    if (protectHits.length > 0) {
+      protectedVerdict = fp.protectVerdict ?? "needs_review";
+      for (const hit of protectHits.slice(0, 2)) {
+        evidence.push(`发现保护标志「${hit.name}」，升级为${protectedVerdict === "keep_locked" ? "默认保护" : "需要确认"}`);
+      }
+    }
+  }
+
   const confidence = Math.min(1, Math.max(0, fp.confidence - (fp.markers && markerHitCount === 0 ? 0.05 : 0)));
-  return { fp, score, confidence, evidence: evidence.slice(0, 8) };
+  return { fp, score, confidence, evidence: evidence.slice(0, 8), ...(protectedVerdict ? { protectedVerdict } : {}) };
 }
 
 function pickBest(results: MatchResult[]): MatchResult | null {
   let best: MatchResult | null = null;
-  for (const r of results) {
-    if (!best || r.score > best.score || (r.score === best.score && r.confidence > best.confidence)) {
-      best = r;
+  for (const result of results) {
+    const resultVerdict = result.protectedVerdict ?? result.fp.verdict;
+    if (!best) {
+      best = result;
+      continue;
+    }
+    const bestVerdict = best.protectedVerdict ?? best.fp.verdict;
+    if (VERDICT_SEVERITY[resultVerdict] > VERDICT_SEVERITY[bestVerdict]) {
+      best = result;
+      continue;
+    }
+    if (VERDICT_SEVERITY[resultVerdict] < VERDICT_SEVERITY[bestVerdict]) continue;
+    if (result.fp.trustLevel < best.fp.trustLevel) {
+      best = result;
+      continue;
+    }
+    if (result.fp.trustLevel === best.fp.trustLevel
+      && (result.score > best.score || (result.score === best.score && result.confidence > best.confidence))) {
+      best = result;
     }
   }
   return best;
@@ -247,13 +388,20 @@ function toHit(result: MatchResult): KnowledgeHit {
     owner: fp.owner,
     ownerKind: fp.ownerKind,
     purpose: fp.purpose,
-    verdict: fp.verdict,
+    verdict: result.protectedVerdict ?? fp.verdict,
     confidence: result.confidence,
     rebuildable: fp.rebuildable,
     reason: fp.reason,
     consequence: fp.consequence,
     revival: [...fp.revival],
     evidence: result.evidence,
+    source: fp.source,
+    trustLevel: fp.trustLevel,
+    ruleScope: fp.ruleScope,
+    ruleVersion: fp.ruleVersion,
+    verifiedAt: fp.verifiedAt,
+    enabled: fp.enabled,
+    originDescription: fp.originDescription,
   };
 }
 
@@ -261,12 +409,14 @@ export function matchFingerprint(
   entry: ScanEntry,
   siblings: ScanEntry[],
   children: ScanEntry[],
+  rules: readonly Fingerprint[] = loadFingerprints(),
 ): KnowledgeHit | null {
   const path = entry.path.replace(/\\/g, "/");
   const childNames = children.map((c) => c.name);
   const siblingNames = siblings.filter((s) => s.id !== entry.id).map((s) => s.name);
   const results: MatchResult[] = [];
-  for (const fp of loadFingerprints()) {
+  for (const fp of rules) {
+    if (!fp.enabled) continue;
     const r = evaluate(fp, entry, path, childNames, siblingNames);
     if (r) results.push(r);
   }
@@ -274,13 +424,17 @@ export function matchFingerprint(
   return best ? toHit(best) : null;
 }
 
-export function matchAll(entries: ScanEntry[]): Map<string, KnowledgeHit | null> {
+export function matchAll(
+  entries: ScanEntry[],
+  extraRules: readonly Fingerprint[] = [],
+): Map<string, KnowledgeHit | null> {
   const byId = new Map<string, ScanEntry>();
   for (const entry of entries) byId.set(entry.id, entry);
 
+  const rules = [...loadFingerprints(), ...extraRules].filter((rule) => rule.enabled);
   const nameIndex = new Map<string, Fingerprint[]>();
   const wildcard: Fingerprint[] = [];
-  for (const fp of loadFingerprints()) {
+  for (const fp of rules) {
     if (fp.name) {
       for (const name of fp.name) {
         const list = nameIndex.get(name);

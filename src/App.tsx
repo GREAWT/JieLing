@@ -24,8 +24,9 @@ import {
 } from "@/src/components";
 import { Panel, ToneDot } from "@/src/components/shared";
 import type {
-  CleanupAction, DiagnosisReport, JudgedEntry, KnowledgeHit, OwnerGroup,
-  QuarantineRecord, RestorePolicy, RevivalMechanism, ScanEntry, ScanPhase, ScanProgress, ScanSource,
+  CleanupAction, DiagnosisReport, JudgedEntry, KnowledgeHit, LocalRule, OwnerGroup,
+  QuarantineRecord, RestorePolicy, RevivalMechanism, RuleCandidate, RuleRevision,
+  RuleScope, ScanEntry, ScanPhase, ScanProgress, ScanSource,
 } from "@/src/core/types";
 import {
   DEFAULT_SCAN_OPTIONS, PRODUCT_NAME, PRODUCT_PHILOSOPHY,
@@ -43,7 +44,11 @@ import { judgeAll } from "@/src/safety/risk";
 import { canQuarantineEntry } from "@/src/safety/guard";
 import { groupByOwner, sortGroups } from "@/src/safety/aggregate";
 import { createDrawerNavigation } from "@/src/app/review";
-import { matchAll } from "@/src/knowledge/match";
+import { compileLocalRules, matchAll } from "@/src/knowledge/match";
+import {
+  candidateFromAi, localRuleFromCandidate, mergeKnowledgeHits, RULE_TRUST,
+} from "@/src/knowledge/rule-model";
+import { createRuleRepository, hashRootLabel, type RuleRepository } from "@/src/knowledge/local-store";
 import { buildReadOnlyDiagnosticScript } from "@/src/diagnose/ps-readonly";
 import { buildCleanupScript } from "@/src/diagnose/ps-clean";
 import {
@@ -160,6 +165,31 @@ export default function App() {
   const retryRef = useRef<() => void>(() => {});
   const dockRef = useRef<HTMLDivElement | null>(null);
   const [dockHeight, setDockHeight] = useState(0);
+  const rootHashRef = useRef("");
+  const ruleRepo = useMemo<RuleRepository>(() => createRuleRepository(), []);
+  const [customRules, setCustomRules] = useState<LocalRule[]>([]);
+  const [ruleCandidates, setRuleCandidates] = useState<RuleCandidate[]>([]);
+  const [ruleRevisions, setRuleRevisions] = useState<RuleRevision[]>([]);
+  const [rulesVersion, setRulesVersion] = useState(0);
+
+  const refreshRuleLibrary = useCallback(async () => {
+    const [rules, pending, revisions, version] = await Promise.all([
+      ruleRepo.listCustom(),
+      ruleRepo.listCandidates(),
+      ruleRepo.listRevisions(),
+      ruleRepo.version(),
+    ]);
+    setCustomRules(rules);
+    setRuleCandidates(pending);
+    setRuleRevisions(revisions);
+    setRulesVersion(version);
+  }, [ruleRepo]);
+
+  useEffect(() => {
+    refreshRuleLibrary().catch((err) => {
+      toast.error(`读取本地规则库失败：${errorMessage(err)}`);
+    });
+  }, [refreshRuleLibrary]);
 
   const localSupported = useMemo(() => isFileSystemAccessSupported(), []);
 
@@ -193,8 +223,8 @@ export default function App() {
     aiIds: Set<string>,
   ): JudgedEntry[] => {
     const judged = judgeAll(list, hits).map((entry) =>
-      aiIds.has(entry.id) ? { ...entry, source: "ai" as const }
-        : cachedIdsRef.current.has(entry.id) ? { ...entry, source: "cache" as const } : entry);
+      aiIds.has(entry.id) ? { ...entry, source: "ai_candidate" as const }
+        : cachedIdsRef.current.has(entry.id) ? { ...entry, source: "cloud_cache" as const } : entry);
     judgedRef.current = judged;
     entriesRef.current = list;
     hitsRef.current = hits;
@@ -255,51 +285,98 @@ export default function App() {
       const nextHits = new Map(hitsRef.current);
       const nextAiIds = new Set(aiIdsRef.current);
       const nextCachedIds = new Set(cachedIdsRef.current);
-      let downgraded = 0;
+      const newCandidates: RuleCandidate[] = [];
+      let capped = 0;
       for (const judgment of response.judgments) {
         const entry = keyToEntry.get(judgment.key);
         if (!entry) continue;
-        // 低置信度的「推荐隔离」一律降档：AI 说了不算，够确信才敢推荐
-        let verdict = judgment.verdict;
-        let reason = judgment.reason;
-        if (verdict === "safe_delete") {
-          verdict = "needs_review";
-          reason = `${reason}（云端判定不能直接作为推荐隔离依据，已降为需要确认）`;
-          downgraded += 1;
-        }
-        nextHits.set(entry.id, {
+        const source = judgment.origin === "ai" ? "ai_candidate" : "cloud_cache";
+        const reason = judgment.verdict === "safe_delete"
+          ? `${judgment.reason}（云端判定不能直接作为推荐隔离依据，已降为需要确认）`
+          : judgment.reason;
+        if (judgment.verdict !== "needs_review") capped += 1;
+        const aiHit: KnowledgeHit = {
           fingerprintId: judgment.fingerprint ?? `ai:${judgment.key}`,
           owner: judgment.owner,
           ownerKind: judgment.ownerKind,
           purpose: judgment.purpose,
-          verdict,
+          verdict: "needs_review",
           confidence: judgment.confidence,
           rebuildable: judgment.rebuildable,
           reason,
           consequence: judgment.consequence,
           revival: judgment.revival,
           evidence: judgment.evidence,
-          source: judgment.origin === "ai" ? "ai" : "cache",
-        });
+          source,
+          trustLevel: RULE_TRUST[source],
+          ruleScope: "software_fingerprint",
+          ruleVersion: "1",
+          verifiedAt: new Date().toISOString().slice(0, 10),
+          enabled: true,
+          originDescription: source === "ai_candidate"
+            ? "AI 辅助推断，仅本次有效；未使用联网检索"
+            : "云端共享缓存，仅减少重复请求，不是正式规则",
+        };
+        nextHits.set(entry.id, mergeKnowledgeHits(nextHits.get(entry.id) ?? null, aiHit) ?? aiHit);
         if (judgment.origin === "ai") nextAiIds.add(entry.id);
         else nextCachedIds.add(entry.id);
+
+        if (judgment.origin === "ai") {
+          const childNames = entry.childIds.map((id) => byId.get(id)?.name).filter((name): name is string => Boolean(name));
+          const parent = entry.parentId ? byId.get(entry.parentId) : null;
+          const siblingNames = parent ? parent.childIds
+            .filter((id) => id !== entry.id)
+            .map((id) => byId.get(id)?.name)
+            .filter((name): name is string => Boolean(name)) : [];
+          newCandidates.push(candidateFromAi({
+            entry,
+            childNames,
+            siblingNames,
+            rootHash: rootHashRef.current,
+            judgment: {
+              owner: judgment.owner,
+              ownerKind: judgment.ownerKind,
+              purpose: judgment.purpose,
+              verdict: judgment.verdict,
+              confidence: judgment.confidence,
+              rebuildable: judgment.rebuildable,
+              reason,
+              consequence: judgment.consequence,
+              revival: judgment.revival,
+              evidence: judgment.evidence,
+            },
+            origin: "ai",
+            model: null,
+            searchUsed: false,
+            sources: [],
+          }));
+        }
+      }
+      if (newCandidates.length > 0) {
+        try {
+          await ruleRepo.saveCandidates(newCandidates);
+          setRuleCandidates(await ruleRepo.listCandidates());
+        } catch (storeErr) {
+          toast.warning(`AI 候选保存失败，本次结果仍只在本页有效：${errorMessage(storeErr)}`);
+        }
       }
       cachedIdsRef.current = nextCachedIds;
       aiIdsRef.current = nextAiIds;
       applyJudgment(entriesRef.current, nextHits, nextAiIds);
-      const downgradeNote = downgraded > 0 ? `；其中 ${downgraded} 项因置信度不足降为「需要确认」` : "";
-      if (response.aiStatus !== "ok") setAiNotice(AI_STATUS_TEXT[response.aiStatus] + downgradeNote);
+      const capNote = capped > 0 ? `；${capped} 项云端结论已封顶为「需要确认」` : "";
+      if (response.aiStatus !== "ok") setAiNotice(AI_STATUS_TEXT[response.aiStatus] + capNote);
       else if (response.judgments.length) {
         setAiNotice((response.cachedCount > 0
-          ? `共享知识库命中 ${response.cachedCount} 条，其余 ${response.judgments.length - response.cachedCount} 条由云端 AI 判定`
-          : `云端 AI 判定了 ${response.judgments.length} 个未识别目录`) + downgradeNote);
+          ? `共享缓存命中 ${response.cachedCount} 条，其余 ${response.judgments.length - response.cachedCount} 条为 AI 辅助推断`
+          : `AI 辅助推断了 ${response.judgments.length} 个未识别目录`) + capNote
+          + "；候选只在本页生效，需到「判定规则」审核后才会保存。");
       } else setAiNotice(null);
     } catch (err) {
       setAiNotice(`${apiErrorText(err)}；已回退本地规则，这些目录保持「需要确认」，不会被自动删除。`);
     } finally {
       setAiBusy(false);
     }
-  }, [applyJudgment]);
+  }, [applyJudgment, ruleRepo]);
 
   const runScan = useCallback(async (
     root: FileSystemDirectoryHandle,
@@ -338,7 +415,17 @@ export default function App() {
       );
       const all = result.entries;
       setProgress({ ...result.progress, phase: "judging" });
-      const hits = matchAll(all);
+      const rootHash = await hashRootLabel(label);
+      rootHashRef.current = rootHash;
+      let libraryRules: LocalRule[] = [];
+      try {
+        libraryRules = await ruleRepo.listCustom();
+        setCustomRules(libraryRules);
+      } catch (ruleErr) {
+        toast.warning(`本地自定义规则读取失败，本次仅使用内置规则：${errorMessage(ruleErr)}`);
+      }
+      const externalRules = compileLocalRules(libraryRules, rootHash);
+      const hits = matchAll(all, externalRules);
       const judged = applyJudgment(all, hits, new Set());
       setProgress({ ...result.progress, phase: "ready" });
       const list = await refreshQuarantine(root);
@@ -374,7 +461,7 @@ export default function App() {
     } finally {
       scannerRef.current = null;
     }
-  }, [applyJudgment, enrichWithAi, refreshQuarantine, writeJournal]);
+  }, [applyJudgment, enrichWithAi, refreshQuarantine, ruleRepo, writeJournal]);
 
   const handleCancelScan = useCallback(() => {
     scannerRef.current?.cancel();
@@ -542,6 +629,97 @@ export default function App() {
     () => records.filter((r) => !r.restored && r.expiresAt <= Date.now()),
     [records],
   );
+
+  const handleCandidateDecision = useCallback(async (
+    candidate: RuleCandidate,
+    decision: "session_only" | "rejected",
+  ) => {
+    try {
+      await ruleRepo.updateCandidate(candidate.id, decision);
+      setRuleCandidates(await ruleRepo.listCandidates());
+      if (decision === "rejected") {
+        const entry = entriesRef.current.find((item) => item.path === candidate.scanPath);
+        if (entry) {
+          const nextHits = new Map(hitsRef.current);
+          nextHits.delete(entry.id);
+          aiIdsRef.current.delete(entry.id);
+          applyJudgment(entriesRef.current, nextHits, aiIdsRef.current);
+        }
+      }
+      toast.success(decision === "session_only" ? "候选仅本次有效，不会进入正式规则库" : "已标记判定有误，候选不会保存为规则");
+    } catch (err) {
+      toast.error(`更新候选失败：${errorMessage(err)}`);
+    }
+  }, [applyJudgment, ruleRepo]);
+
+  const handleCreateRuleFromCandidate = useCallback(async (
+    candidate: RuleCandidate,
+    scope: RuleScope,
+  ) => {
+    try {
+      const rule = localRuleFromCandidate(candidate, scope, "needs_review", candidate.rootHash);
+      await ruleRepo.addCustom(rule, `由 AI候选创建${scope === "exact_path" ? "精确目录" : "通用结构"}规则`);
+      await ruleRepo.updateCandidate(candidate.id, "approved");
+      await refreshRuleLibrary();
+      toast.success(scope === "exact_path"
+        ? "已创建精确目录规则，下次扫描同一目录会自动复用"
+        : "已创建通用结构规则，需同时匹配名称与结构证据");
+    } catch (err) {
+      toast.error(`创建规则失败：${errorMessage(err)}`);
+    }
+  }, [refreshRuleLibrary, ruleRepo]);
+
+  const handleToggleCustomRule = useCallback(async (rule: LocalRule, enabled: boolean) => {
+    try {
+      await ruleRepo.updateCustom(rule.id, { enabled }, enabled ? "重新启用自定义规则" : "禁用自定义规则");
+      await refreshRuleLibrary();
+      toast.success(enabled ? "规则已重新启用" : "规则已禁用，下次扫描不再命中");
+    } catch (err) {
+      toast.error(`更新规则失败：${errorMessage(err)}`);
+    }
+  }, [refreshRuleLibrary, ruleRepo]);
+
+  const handleDeleteCustomRule = useCallback(async (rule: LocalRule) => {
+    if (!window.confirm(`删除自定义规则「${rule.software}」？此操作会保留历史版本，可回滚。`)) return;
+    try {
+      await ruleRepo.removeCustom(rule.id, "删除自定义规则");
+      await refreshRuleLibrary();
+      toast.success("规则已删除，可从更新记录回滚");
+    } catch (err) {
+      toast.error(`删除规则失败：${errorMessage(err)}`);
+    }
+  }, [refreshRuleLibrary, ruleRepo]);
+
+  const handleExportRules = useCallback(async () => {
+    try {
+      const pack = await ruleRepo.exportPack();
+      downloadText(`dareclean-rules-v${pack.rulesVersion}.json`, JSON.stringify(pack, null, 2));
+      toast.success("已导出规则包（不含绝对路径与用户名）");
+    } catch (err) {
+      toast.error(`导出规则失败：${errorMessage(err)}`);
+    }
+  }, [ruleRepo]);
+
+  const handleImportRules = useCallback(async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const result = await ruleRepo.importPack(await file.text());
+      await refreshRuleLibrary();
+      toast.success(`规则包已导入：新增 ${result.imported} 条；原有规则未被破坏`);
+    } catch (err) {
+      toast.error(`导入失败，现有规则保持不变：${errorMessage(err)}`);
+    }
+  }, [refreshRuleLibrary, ruleRepo]);
+
+  const handleRollbackRules = useCallback(async () => {
+    try {
+      await ruleRepo.rollback();
+      await refreshRuleLibrary();
+      toast.success("已回滚到上一版自定义规则集");
+    } catch (err) {
+      toast.error(`回滚失败：${errorMessage(err)}`);
+    }
+  }, [refreshRuleLibrary, ruleRepo]);
 
   const handleQuarantine = useCallback(async () => {
     const root = rootRef.current;
@@ -1400,7 +1578,19 @@ export default function App() {
                   </TabsContent>
 
                   <TabsContent value="knowledge" className="mt-4">
-                    <RulesPanel />
+                    <RulesPanel
+                      customRules={customRules}
+                      candidates={ruleCandidates}
+                      revisions={ruleRevisions}
+                      rulesVersion={rulesVersion}
+                      onToggleCustomRule={(rule, enabled) => void handleToggleCustomRule(rule, enabled)}
+                      onDeleteCustomRule={(rule) => void handleDeleteCustomRule(rule)}
+                      onExportRules={() => void handleExportRules()}
+                      onImportRules={(file) => void handleImportRules(file)}
+                      onRollbackRules={() => void handleRollbackRules()}
+                      onCandidateDecision={(candidate, decision) => void handleCandidateDecision(candidate, decision)}
+                      onCreateCandidateRule={(candidate, scope) => void handleCreateRuleFromCandidate(candidate, scope)}
+                    />
                   </TabsContent>
                 </Tabs>
               </>
