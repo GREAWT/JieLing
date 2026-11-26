@@ -1,4 +1,5 @@
-import type { ScanEntry, ScanOptions, ScanProgress, ScanResult, ScanSource } from "../core/types";
+import type { ScanCoverage, ScanEntry, ScanOptions, ScanProgress, ScanResult, ScanSource } from "../core/types";
+import { summarizeCoverage } from "../safety/guard";
 import { runScan, type ScanWorkerMessage } from "./scan.worker";
 
 export interface Scanner {
@@ -13,10 +14,19 @@ export interface Scanner {
   cancel(): void;
 }
 
-function abortError(): Error {
-  const err = new Error("扫描已取消");
-  err.name = "AbortError";
-  return err;
+function markGlobalCoverage(entries: ScanEntry[], reasons: ScanCoverage[]): void {
+  if (reasons.length === 0) return;
+  for (const entry of entries) {
+    if (entry.kind !== "directory") continue;
+    const current = new Set(entry.coverage ?? ["complete"]);
+    current.delete("complete");
+    for (const reason of reasons) current.add(reason);
+    entry.coverage = [...current];
+  }
+}
+
+function finalizeProgress(progress: ScanProgress, entries: ScanEntry[]): ScanProgress {
+  return { ...progress, coverage: summarizeCoverage(entries) };
 }
 
 export function createScanner(): Scanner {
@@ -51,11 +61,20 @@ export function createScanner(): Scanner {
               break;
             case "done":
               cleanup();
-              resolve({ entries, progress: msg.progress, rootLabel, source });
+              if (msg.progress.truncated) markGlobalCoverage(entries, ["entry_limited"]);
+              resolve({ entries, progress: finalizeProgress(msg.progress, entries), rootLabel, source });
               break;
             case "cancelled":
               cleanup();
-              reject(abortError());
+              markGlobalCoverage(entries, ["cancelled"]);
+              if (msg.progress.truncated) markGlobalCoverage(entries, ["entry_limited"]);
+              onProgress(msg.progress);
+              resolve({
+                entries,
+                progress: finalizeProgress({ ...msg.progress, phase: "ready", stopped: true }, entries),
+                rootLabel,
+                source,
+              });
               break;
             case "error":
               cleanup();

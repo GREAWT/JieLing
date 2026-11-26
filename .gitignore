@@ -11,3 +11,7 @@ dist/
 *.qoder.site
 # 构建时从 skill/ 与 src/knowledge/ 复制出的 Skill 产物，真源不在这里
 public/skill/
+
+# 测试用 Vite 缓存
+.vite-fs/
+.vite-app/

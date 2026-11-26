@@ -141,5 +141,5 @@
 - confidence: 0.5
 - rebuildable: false
 - reason: 这类名字是外壳扩展的登记点。资源管理器里看不到实体、却反复出现的目录，多半是注册表 NameSpace/CLSID 指向这里；但仅凭名字不能定罪，项目里也可能有普通的 shell 目录。
-- consequence: 只删目录不够：注册表登记还在，残留组件会把它重建。请到「复活诊断」生成只读脚本取证，确认 CLSID 归属后先注销登记再删目录。
+- consequence: 只删目录可能留下注册表登记或残留组件。请到「顽固软件诊断」生成只读脚本取证，确认登记归属并优先走官方卸载。
 - revival: shell_namespace

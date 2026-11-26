@@ -36,7 +36,7 @@ const REVIVAL_ENUM_DOC = [
   "scheduled_task=计划任务定时重建",
   "run_key=注册表启动项/开机启动重建",
   "shell_namespace=外壳命名空间扩展（资源管理器里的虚拟文件夹，删实体无效）",
-  "process_lock=进程占用导致删不净或立即重建",
+  "process_lock=进程正在使用文件，关闭相关程序后可重试；这不是删后重建",
   "missing_uninstaller=卸载器缺失/损坏导致残留无法正规清除",
   "driver_protected=驱动级自保护拦截删除",
 ].join("；");
@@ -83,7 +83,7 @@ export function buildUnknownDirPrompt(entry: ScanEntry, childNames: string[], pa
     '  "rebuildable": "布尔值：删除后内容能否自动或低成本再生",',
     '  "reason": "为什么能删/为什么别删（普通用户能懂）",',
     '  "consequence": "删了会怎样、如何恢复（普通用户能懂）",',
-    `  "revival": "数组，只能取这些值：${REVIVAL_ENUM_DOC}；没有复活风险则空数组",`,
+    `  "revival": "数组，只能取这些值：${REVIVAL_ENUM_DOC}；分别标注重建、占用、卸载残留与虚拟文件夹，没有机制则空数组",`,
     '  "evidence": "数组，最多 5 条，写你实际依据的数据证据，例如：子项中存在 .package-lock.json",',
     "}",
     "再次强调：只输出 JSON 本身；拿不准就 needs_review/keep_locked 并压低 confidence。",
@@ -94,13 +94,13 @@ export function buildDiagnosisPrompt(rawReport: string): string {
   const report = sanitizeUntrusted(rawReport, MAX_REPORT_LENGTH);
   const truncated = rawReport.length > MAX_REPORT_LENGTH;
   return [
-    "你是「洁灵」——AI 磁盘清理决策助手——的复活源头诊断引擎。用户遇到「文件夹删了又出现」的残留问题，下面是一份 PowerShell 只读诊断报告（服务、计划任务、启动项、外壳扩展、卸载信息等）。",
-    "任务：判定残留目录的复活源头属于哪类机制，并给出安全的「断根」顺序建议。",
+    "你是「洁灵」——AI 磁盘清理决策助手——的顽固软件诊断引擎。用户遇到「文件夹删了又出现」「无法卸载」的残留问题，下面是一份 PowerShell 只读诊断报告（服务、计划任务、启动项、外壳扩展、卸载信息等）。",
+    "任务：判定删后重建、进程占用、卸载残留或虚拟文件夹登记分别属于哪类机制，并给出安全的处理顺序建议。进程占用不等于删后重建。",
     "",
     "# 判定原则",
     "1. 只依据报告中真实出现的证据下结论；报告里没有的机制不要猜、不要编造。每条 finding 的 confidence 反映证据强度，证据薄弱时不高于 0.5。",
     `2. mechanism 只能取：${REVIVAL_ENUM_DOC}。`,
-    "3. 断根顺序原则：先停占用进程 → 禁用/移除服务与计划任务 → 清理启动项 → 处理外壳命名空间扩展 → 最后才删目录。顺序颠倒会导致删除失败或目录复活。",
+    "3. 处理顺序原则：先关闭占用进程；有重建来源时再处理服务与计划任务、启动项；虚拟文件夹登记不等于磁盘文件重建，须单独说明；最后才考虑隔离残留目录。不得把占用推断成重建。",
     "4. 涉及 driver_protected（驱动级自保护）时，必须建议走官方卸载器或安全模式，绝不建议手动强删驱动文件。",
     "5. 找不到官方卸载器时 officialUninstaller 输出 null，并在 cleanupOrder 中体现 missing_uninstaller 的风险提示。",
     "6. action 用普通用户能懂的中文描述操作意图与位置，不要输出破坏性命令；danger 按操作不可逆程度取 low/medium/high。",

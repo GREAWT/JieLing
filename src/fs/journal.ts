@@ -1,4 +1,4 @@
-import { QUARANTINE_DIR, QUARANTINE_TTL_DAYS, REVIVAL_LABEL, VERDICT_LABEL } from "../core/constants";
+import { QUARANTINE_DIR, QUARANTINE_TTL_DAYS, REVIVAL_LABEL, VERDICT_LABEL, confidenceLabel, rebuildMechanisms } from "../core/constants";
 import type { EntryKind, JudgedEntry, QuarantineRecord, RevivalMechanism, Verdict } from "../core/types";
 import { ensureQuarantineDir, errorMessage, isNotFoundError, readTextFile, writeTextFile } from "./adapter";
 
@@ -9,12 +9,13 @@ export const FOLDER_DICTIONARY_NAME = "文件夹名录.md";
 // 否则清空一次就把全部历史抹掉，或者把 md 当成待还原的垃圾条目。
 export const JOURNAL_NAMES: readonly string[] = [OPS_MANUAL_NAME, FOLDER_DICTIONARY_NAME];
 
-export type JournalOperation = "quarantine" | "restore" | "delete" | "purge" | "clear";
+export type JournalOperation = "quarantine" | "restore" | "delete" | "delete_audit" | "purge" | "clear";
 
 const OPERATION_LABEL: Record<JournalOperation, string> = {
   quarantine: "移入隔离区",
   restore: "还原到原位置",
   delete: "彻底删除单项",
+  delete_audit: "删除审计记录",
   purge: "清理到期项",
   clear: "清空隔离区",
 };
@@ -23,6 +24,7 @@ const OPERATION_RISK: Record<JournalOperation, string> = {
   quarantine: "可逆。内容只是搬进隔离区，原位置腾空，随时可以还原。",
   restore: "可逆操作的反向：内容已回到原路径，隔离区不再持有副本。",
   delete: "不可逆。该项已从隔离区彻底移除，无法再还原。",
+  delete_audit: "仅移除隔离清单中的历史记录；原文件与操作记录、恢复说明不受影响。",
   purge: "不可逆。到期项已彻底移除，无法再还原。",
   clear: "不可逆。隔离区全部内容已彻底移除，无法再还原。",
 };
@@ -96,7 +98,7 @@ export function itemsFromRecords(records: QuarantineRecord[]): OpsItem[] {
 
 function manualHeader(): string {
   return [
-    "# 洁灵 · 运维手册",
+    "# 洁灵 · 操作记录",
     "",
     "> 本文件由洁灵在每次清理操作后自动追加，记录「做了什么、为什么、怎么撤回」。",
     `> 位置：所选根目录下的 \`${QUARANTINE_DIR}/${OPS_MANUAL_NAME}\`。`,
@@ -104,13 +106,13 @@ function manualHeader(): string {
     "",
     "## 怎么用这份手册",
     "",
-    `- **想撤回**：在「隔离区」标签页点「还原」，内容会回到原路径；若原路径已被占用，会先问你「跳过 / 保留两份 / 替换」，不会静默覆盖。`,
+    `- **想撤回**：在「隔离区」标签页点「还原」，内容会回到原路径；若原路径已被占用，会先问你「跳过 / 保留两份」，不会静默覆盖。`,
     `- **手动撤回**：隔离区里的条目名为 \`<id>__<URL编码的原路径>\`，解码后即可知道它该回哪里。`,
     `- **到期规则**：隔离内容保留 ${QUARANTINE_TTL_DAYS} 天，到期后仍需你确认才会彻底删除，不会自动清理。`,
-    "- **删了又复活**：若下表「复活风险」非空，说明有服务、计划任务、启动项或注册表外壳登记在重建它。",
-    "  只删文件夹无效，请到「复活诊断」生成只读脚本取证，先断来源再清理。",
+    "- **删后重建风险**：仅服务、计划任务或启动项等具体重建机制会列入下表；进程占用不属于重建。",
+    "  请到「顽固软件诊断」生成只读脚本核对来源，确认后再清理。",
     "- **浏览器能力边界**：洁灵运行在网页里，无法访问注册表、服务与正规卸载器。",
-    "  这部分通过你在本机 PowerShell 运行脚本来完成，UAC 会向你申请授权。",
+    "  这部分通过你在本机 PowerShell 运行只读脚本来完成；默认使用普通权限，只有你主动选择时才需要以管理员身份运行。",
     "",
     "## 操作记录",
     "",
@@ -129,12 +131,12 @@ function renderEvent(event: OpsEvent): string {
 
   if (event.items.length > 0) {
     lines.push(
-      "| 原路径 | 类型 | 归属 | 判定 | 体积 | 为什么 | 删了会怎样 | 复活风险 |",
+      "| 原路径 | 类型 | 归属 | 判定 | 体积 | 为什么 | 删了会怎样 | 删后重建风险 |",
       "| --- | --- | --- | --- | --- | --- | --- | --- |",
     );
     for (const item of event.items) {
       lines.push(
-        `| ${cell(item.path)} | ${item.kind === "directory" ? "目录" : "文件"} | ${cell(item.owner)} | ${item.verdict ? VERDICT_LABEL[item.verdict] : "—"} | ${bytes(item.size)} | ${cell(item.reason)} | ${cell(item.consequence ?? "—")} | ${cell(item.revival.map((m) => REVIVAL_LABEL[m] ?? m).join("、"))} |`,
+        `| ${cell(item.path)} | ${item.kind === "directory" ? "目录" : "文件"} | ${cell(item.owner)} | ${item.verdict ? VERDICT_LABEL[item.verdict] : "—"} | ${bytes(item.size)} | ${cell(item.reason)} | ${cell(item.consequence ?? "—")} | ${cell(rebuildMechanisms(item.revival).map((m) => REVIVAL_LABEL[m] ?? m).join("、"))} |`,
       );
     }
     lines.push("");
@@ -170,11 +172,11 @@ interface DictionaryRow {
 }
 
 const DICTIONARY_HEADER = [
-  "# 洁灵 · 文件夹名录",
+  "# 洁灵 · 恢复说明",
   "",
   "> 每个文件夹名称后面标注它是什么、归属谁、能不能删。由洁灵在每次扫描与清理后自动更新。",
   `> 位置：所选根目录下的 \`${QUARANTINE_DIR}/${FOLDER_DICTIONARY_NAME}\`。`,
-  "> 判定来源：本地指纹知识库（md 规则编译）→ 云端 AI 判定未识别目录 → 共享缓存。",
+  "> 判定来源：可审查的本地规则 → 启发式判断；只有真实调用模型时才标记 AI 辅助分析，共享缓存单独标注。",
   "> 「需要你确认」不等于可删；「建议保留」已被锁定，不参与勾选。",
   "",
   "| 文件夹名 | 类型 | 归属 | 这是什么 | 判定 | 置信度 | 备注 |",
@@ -205,7 +207,7 @@ function parseDictionary(text: string | null): Map<string, DictionaryRow> {
 
 function describeUnknown(entry: JudgedEntry): string {
   if (entry.isEmptyDir) return "空目录。可能是软件预留的工作区，也可能是卸载后剩下的空壳";
-  if (entry.kind === "file") return `普通文件（${bytes(entry.size)}），未命中指纹库`;
+  if (entry.kind === "file") return `普通文件（${bytes(entry.size)}），未命中本地规则`;
   return `未识别目录，含 ${entry.fileCount} 个文件`;
 }
 
@@ -224,7 +226,9 @@ export async function syncFolderDictionary(
     const notes: string[] = [];
     if (entry.isEmptyDir) notes.push("空目录");
     if (hit?.rebuildable) notes.push("删后软件会自动重建");
-    if (hit?.revival.length) notes.push(`复活风险：${hit.revival.map((m) => REVIVAL_LABEL[m] ?? m).join("、")}`);
+    const rebuilds = rebuildMechanisms(hit?.revival ?? []);
+    if (rebuilds.length) notes.push(`删后重建风险：${rebuilds.map((m) => REVIVAL_LABEL[m] ?? m).join("、")}`);
+    if (hit?.revival.includes("process_lock")) notes.push("正在使用，关闭相关程序后重试");
     if (entry.locked) notes.push("已锁定，不可勾选");
     // 同名文件夹在不同位置含义可能不同：保留最新一次扫描的判定，但把历史依据附在备注里
     if (previous && previous.purpose !== (hit?.purpose ?? describeUnknown(entry))) {
@@ -236,7 +240,7 @@ export async function syncFolderDictionary(
       owner: hit?.owner ?? "未识别",
       purpose: hit?.purpose ?? describeUnknown(entry),
       verdict: VERDICT_LABEL[entry.verdict],
-      confidence: hit ? `${Math.round(hit.confidence * 100)}%` : "—",
+      confidence: hit ? confidenceLabel(hit.confidence) : "—",
       note: notes.join("；") || "—",
     });
   }

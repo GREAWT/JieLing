@@ -21,11 +21,29 @@ function isPlausibleUninstallString(value: string): boolean {
 }
 
 export function resolveUninstallGuidance(report: DiagnosisReport): UninstallGuidance {
-  const raw = report.officialUninstaller;
-  const hasDriver = report.findings.some((f) => f.mechanism === "driver_protected");
+  const requested = report.officialUninstaller;
+  const localEntry = requested
+    ? report.evidence.find((entry) => entry.kind === "uninstaller" && entry.uninstallString === requested)
+    : undefined;
+  const raw = localEntry?.uninstallString ?? null;
+  const hasDriver = report.evidence.some((entry) => entry.kind === "service" && entry.driver === true);
   const driverWarning = hasDriver
     ? "检测到驱动级保护：卸载可能要求重启或进入安全模式，切勿手工停止/删除 .sys 驱动文件。"
     : null;
+
+  if (requested && !localEntry) {
+    return {
+      hasOfficialUninstaller: false,
+      uninstallString: null,
+      preferOfficial: false,
+      steps: [
+        "AI 或外部内容提供的卸载入口未匹配本次本地证据，已禁止作为可执行卸载命令展示。",
+        "请重新运行只读诊断脚本，或在「设置 → 应用 → 已安装的应用」中人工核对官方卸载入口。",
+        "确认本地证据后再生成处方；不要直接复制来源不明的卸载路径。",
+      ],
+      warning: "卸载入口未通过本地证据绑定校验。",
+    };
+  }
 
   if (raw && isPlausibleUninstallString(raw)) {
     return {
@@ -46,7 +64,7 @@ export function resolveUninstallGuidance(report: DiagnosisReport): UninstallGuid
   if (raw) {
     return {
       hasOfficialUninstaller: false,
-      uninstallString: raw,
+      uninstallString: null,
       preferOfficial: false,
       steps: [
         "注册表里有卸载命令，但格式异常，不要直接复制执行。",
@@ -69,6 +87,6 @@ export function resolveUninstallGuidance(report: DiagnosisReport): UninstallGuid
       "手工改注册表是兜底下策：只处理脚本列出的单个项，执行前脚本会自动备份。",
       "复扫确认不再复活后，再把残留目录移入隔离区观察，而不是直接删除。",
     ],
-    warning: `未找到官方卸载器，只删文件必然复活。${driverWarning ?? "手工清理注册表属于兜底手段，务必逐项确认并保留备份。"}`,
+    warning: `未找到官方卸载器，只删文件可能留下重建来源或卸载残留。${driverWarning ?? "手工清理注册表属于兜底手段，务必逐项确认并保留备份。"}`,
   };
 }

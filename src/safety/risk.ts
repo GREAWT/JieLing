@@ -81,13 +81,13 @@ function heuristicJudge(entry: ScanEntry): Heuristic {
   const lowerName = entry.name.toLowerCase();
 
   if (entry.kind === "directory" && entry.isEmptyDir) {
-    return { riskScore: 8, confidence: 0.9 };
+    return { riskScore: 45, confidence: 0.4 };
   }
   if (entry.kind === "file" && (JUNK_FILE_EXTENSIONS.has(extOf(entry.name)) || JUNK_FILE_NAMES.has(lowerName))) {
-    return { riskScore: 15, confidence: 0.8 };
+    return { riskScore: 50, confidence: 0.4 };
   }
   if (entry.kind === "directory" && REBUILDABLE_DIR_NAMES.has(lowerName)) {
-    return { riskScore: 22, confidence: 0.7 };
+    return { riskScore: 45, confidence: 0.45 };
   }
   if (USER_DIR_NAMES.has(lowerName)) {
     return { riskScore: 88, confidence: 0.75 };
@@ -102,8 +102,9 @@ function heuristicJudge(entry: ScanEntry): Heuristic {
   return { riskScore: 60, confidence: 0.35 };
 }
 
-function verdictFromRisk(riskScore: number): Verdict {
-  return riskScore <= 30 ? "safe_delete" : "needs_review";
+function completeCoverage(entry: ScanEntry): boolean {
+  return entry.kind !== "directory"
+    || (Array.isArray(entry.coverage) && entry.coverage.length === 1 && entry.coverage[0] === "complete");
 }
 
 export function judgeEntry(entry: ScanEntry, hit: KnowledgeHit | null): JudgedEntry {
@@ -117,6 +118,7 @@ export function judgeEntry(entry: ScanEntry, hit: KnowledgeHit | null): JudgedEn
       riskScore: 100,
       priority: 0,
       locked: true,
+      lockReason: guard.reason,
       source: hit ? "fingerprint" : "heuristic",
     };
   }
@@ -130,6 +132,10 @@ export function judgeEntry(entry: ScanEntry, hit: KnowledgeHit | null): JudgedEn
     confidence = clamp(hit.confidence, 0, 1);
     // 低置信度的「可删」结论不足以支撑自动化，降档让人确认
     if (verdict === "safe_delete" && confidence < 0.5) verdict = "needs_review";
+    // 只有经过审查的本地指纹才能给出推荐隔离；AI 与共享缓存最多到「需要确认」
+    if (verdict === "safe_delete" && (hit.source === "ai" || hit.source === "cache")) {
+      verdict = "needs_review";
+    }
     riskScore = clamp(
       VERDICT_RISK_BASE[verdict] + (1 - confidence) * 20 - (hit.rebuildable ? 10 : 0),
       0,
@@ -139,7 +145,8 @@ export function judgeEntry(entry: ScanEntry, hit: KnowledgeHit | null): JudgedEn
     const h = heuristicJudge(entry);
     riskScore = h.riskScore;
     confidence = h.confidence;
-    verdict = verdictFromRisk(riskScore);
+    // 空目录、通用缓存名和扩展名都只是弱启发式，不能直接成为可删结论
+    verdict = "needs_review";
   }
 
   const priority = entry.size * confidence * SAFETY_FACTOR[verdict];
@@ -161,6 +168,19 @@ export function judgeAll(
 ): JudgedEntry[] {
   const judged = entries.map((entry) => judgeEntry(entry, hits.get(entry.id) ?? hits.get(entry.path) ?? null));
 
+  // 覆盖不完整意味着我们不知道子树里还有什么。目录本身和所有祖先都不能整体隔离。
+  for (const entry of judged) {
+    if (entry.kind !== "directory" || completeCoverage(entry)) continue;
+    const reasons = entry.coverage.filter((reason) => reason !== "complete").join("、");
+    if (!entry.locked) {
+      entry.locked = true;
+      entry.verdict = "keep_locked";
+      entry.riskScore = 100;
+      entry.priority = 0;
+    }
+    entry.lockReason ??= `扫描覆盖不完整（${reasons}），不能整体隔离；请重新扫描或改选已完整扫描的子项。`;
+  }
+
   // 整体隔离一个目录会连带移走它的整棵子树。子树里只要有不可替代的数据，
   // 祖先就必须一起锁定，否则「可删的容器」会绕过对里面关键文件的保护。
   const byId = new Map(judged.map((e) => [e.id, e]));
@@ -175,6 +195,7 @@ export function judgeAll(
         ancestor.verdict = "keep_locked";
         ancestor.riskScore = 100;
         ancestor.priority = 0;
+        ancestor.lockReason ??= `子项「${entry.name}」需要保护或扫描不完整，父目录不能整体隔离。`;
       }
       cursor = ancestor.parentId;
     }

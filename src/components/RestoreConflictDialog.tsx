@@ -1,4 +1,4 @@
-import { Copy, FileQuestion, Replace, SkipForward } from "lucide-react";
+import { Copy, FileQuestion, SkipForward } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -8,7 +8,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Spinner } from "@/components/ui/spinner";
 import type { QuarantineRecord, RestorePolicy } from "@/src/core/types";
 
 export interface RestoreConflictDialogProps {
@@ -19,7 +18,7 @@ export interface RestoreConflictDialogProps {
   busy?: boolean;
 }
 
-/** 还原遇到同名内容：跳过 / 保留两份 / 替换，三选一，绝不静默覆盖 */
+/** 还原遇到同名内容：跳过 / 保留两份，暂不提供替换，绝不静默覆盖 */
 export function RestoreConflictDialog({
   open,
   onOpenChange,
@@ -53,10 +52,6 @@ export function RestoreConflictDialog({
           <Button variant="outline" className="justify-start" disabled={busy} onClick={() => onChoose("keep-both")}>
             <Copy aria-hidden />
             保留两份：还原为「名称（还原副本）」
-          </Button>
-          <Button variant="destructive" className="justify-start" disabled={busy} onClick={() => onChoose("replace")}>
-            {busy ? <Spinner /> : <Replace aria-hidden />}
-            替换：删除原位置现有内容后还原
           </Button>
         </div>
 

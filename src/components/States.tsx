@@ -54,7 +54,7 @@ export function ErrorState({
         </p>
         <p className="text-sm leading-relaxed text-muted-foreground">
           {unsupported
-            ? "真实目录扫描依赖 File System Access API，请使用桌面版 Chrome 或 Edge 打开。也可以先用样本磁盘体验完整流程。"
+            ? "真实目录扫描依赖 File System Access API，请使用桌面版 Chrome 或 Edge 打开。也可以先用演示模式体验完整流程。"
             : message}
         </p>
         {(onRetry || onUseSandbox) && (
@@ -63,7 +63,7 @@ export function ErrorState({
               <Button size="sm" variant="outline" onClick={onRetry}>重试</Button>
             )}
             {onUseSandbox && (
-              <Button size="sm" variant="ghost" onClick={onUseSandbox}>改用样本磁盘</Button>
+              <Button size="sm" variant="ghost" onClick={onUseSandbox}>改用演示模式</Button>
             )}
           </div>
         )}

@@ -37,6 +37,13 @@ function recordName(record: QuarantineRecord): string {
   return record.originalPath.split(/[\\/]/).filter(Boolean).pop() ?? record.originalPath;
 }
 
+function checksumLabel(record: QuarantineRecord): string {
+  if (record.checksumAlgo === "sha256") return "完整 SHA-256";
+  if (record.checksumAlgo === "sha256-sample") return "首尾采样 SHA-256（非全文件）";
+  if (record.checksumAlgo === "tree-sha256") return "目录结构与大小校验（未校验文件内容）";
+  return "无校验值";
+}
+
 export function QuarantineView({
   records,
   onRestore,
@@ -111,7 +118,7 @@ export function QuarantineView({
         <span>
           <strong className="dc-tone-text">不可恢复风险提示：</strong>
           {source === "sandbox"
-            ? "样本磁盘的隔离区存放在浏览器沙箱（OPFS）里，清除浏览器数据、存储回收或换浏览器都会让隔离内容永久丢失。"
+            ? "演示模式的隔离区存放在浏览器沙箱（OPFS）里，清除浏览器数据、存储回收或换浏览器都会让隔离内容永久丢失。"
             : "真实目录的隔离区保存在所选目录内部，删除该目录、格式化磁盘或失去访问权限同样会导致无法还原。"}
           这些情况洁灵无法拦截：重要内容请及时还原，或另行备份一份。
         </span>
@@ -120,7 +127,7 @@ export function QuarantineView({
       {records.length === 0 ? (
         <EmptyState
           icon={<Archive aria-hidden />}
-          title="隔离区是空的"
+          title="暂无隔离内容"
           description="在审核台勾选条目后点「移入隔离区」，文件会先搬到这里，确认没问题后再彻底清理。"
         />
       ) : (
@@ -130,20 +137,23 @@ export function QuarantineView({
             const daysLeft = Math.ceil(msLeft / DAY_MS);
             const busy = busyId === record.id;
             const processing = record.status === "processing";
+            const reconciling = record.status === "needs_reconcile";
             const failed = record.status === "quarantine_failed" || record.status === "restore_failed";
-            const isExpired = !record.restored && !failed && msLeft <= 0;
+            const isExpired = !record.restored && !failed && !reconciling && msLeft <= 0;
             const tone = record.restored
               ? "dc-tone-locked"
+              : reconciling ? "dc-tone-danger"
               : failed ? "dc-tone-danger"
               : processing ? "dc-tone-info"
               : isExpired ? "dc-tone-danger" : daysLeft <= 2 ? "dc-tone-review" : "dc-tone-safe";
             const stateLabel = record.restored
               ? "已还原"
+              : reconciling ? "需要恢复检查"
               : record.status === "quarantine_failed" ? "隔离失败"
               : record.status === "restore_failed" ? "还原失败"
               : processing ? "处理中"
               : isExpired ? "已到期 · 待你确认" : `${daysLeft} 天后到期`;
-            const actionsDisabled = busy || globalBusy || processing || record.restored;
+            const actionsDisabled = busy || globalBusy || processing || reconciling || record.restored;
 
             return (
               <li
@@ -174,13 +184,13 @@ export function QuarantineView({
                     隔离于 {formatDateTime(record.quarantinedAt)}
                     {record.modifiedAt > 0 && <> · 原修改于 {formatDateTime(record.modifiedAt)}</>}
                     {record.checksum && (
-                      <> · 校验值 <span className="dc-path" title={`${record.checksumAlgo}: ${record.checksum}`}>{record.checksum.slice(0, 8)}</span></>
+                      <> · 校验 <span className="dc-path" title={`${checksumLabel(record)}: ${record.checksum}`}>{record.checksum.slice(0, 8)}</span> · {checksumLabel(record)}</>
                     )}
                   </p>
                   {record.note && (
                     <p className="dc-tone-review dc-tone-text mt-0.5 text-xs leading-relaxed">{record.note}</p>
                   )}
-                  {!record.restored && !failed && (
+                  {!record.restored && !failed && !reconciling && (
                     <Meter
                       className="mt-2 max-w-64"
                       tone={tone}
@@ -200,17 +210,17 @@ export function QuarantineView({
                     disabled={actionsDisabled || record.status === "quarantine_failed"}
                   >
                     {busy ? <Spinner /> : <RotateCcw aria-hidden />}
-                    还原
+                    {reconciling ? "需恢复检查" : "还原"}
                   </Button>
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="dc-tone-danger dc-tone-text"
+                    className={cn(!record.restored && "dc-tone-danger dc-tone-text")}
                     onClick={() => setDeleteTarget(record)}
-                    disabled={busy || globalBusy || processing}
+                    disabled={busy || globalBusy || processing || reconciling}
                   >
                     <Trash2 aria-hidden />
-                    彻底删除
+                    {record.restored ? "删除审计记录" : "彻底删除"}
                   </Button>
                 </div>
               </li>
@@ -232,22 +242,24 @@ export function QuarantineView({
         <AlertDialogContent className="dc-panel dc-tone-danger rounded-xl">
           <AlertDialogHeader>
             <AlertDialogTitle className="dc-display tracking-wide">
-              彻底删除「{deleteTarget ? recordName(deleteTarget) : ""}」？
+              {deleteTarget?.restored ? "删除审计记录" : "彻底删除"}「{deleteTarget ? recordName(deleteTarget) : ""}」？
             </AlertDialogTitle>
             <AlertDialogDescription>
-              将从隔离区永久移除，无法再还原。确定不需要了再删。
+              {deleteTarget?.restored
+                ? "只移除隔离清单中的这条历史记录；不会删除原文件，操作记录与恢复说明也会保留。"
+                : "将从隔离区永久移除，无法再还原。确定不需要了再删。"}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
-              variant="destructive"
+              variant={deleteTarget?.restored ? "default" : "destructive"}
               onClick={() => {
                 if (deleteTarget) onDelete(deleteTarget);
                 setDeleteTarget(null);
               }}
             >
-              彻底删除
+              {deleteTarget?.restored ? "删除审计记录" : "彻底删除"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -259,7 +271,7 @@ export function QuarantineView({
             <AlertDialogTitle className="dc-display tracking-wide">清空隔离区？</AlertDialogTitle>
             <AlertDialogDescription>
               {active.length} 项、共 <SizeValue bytes={activeBytes} /> 将被永久删除，无法还原。
-              运维手册与文件夹名录作为审计历史保留，不会随之抹掉。
+              操作记录与恢复说明作为审计历史保留，不会随之抹掉。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <label className="flex items-start gap-2 rounded-lg border border-hairline px-3 py-2 text-xs leading-relaxed">

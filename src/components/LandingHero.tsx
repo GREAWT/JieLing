@@ -1,7 +1,6 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Archive,
-  ChevronDown,
   ChevronRight,
   File,
   FlaskConical,
@@ -19,12 +18,15 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { PRODUCT_PHILOSOPHY, QUARANTINE_TTL_DAYS, VERDICT_ACTION } from "@/src/core/constants";
+import {
+  AI_DIRECTORY_DATA_NOTICE, PRODUCT_PHILOSOPHY, QUARANTINE_TTL_DAYS, VERDICT_ACTION, rebuildMechanisms,
+} from "@/src/core/constants";
 import type { JudgedEntry } from "@/src/core/types";
 import { sandboxPreviewTree } from "@/src/fs";
 import { matchAll } from "@/src/knowledge/match";
 import { judgeAll } from "@/src/safety/risk";
 import { Panel, RevivalBadge, SizeValue, VerdictBadge } from "./shared";
+import { EntryDrawer } from "./EntryDrawer";
 
 export interface LandingHeroProps {
   onGenerate: () => void;
@@ -40,7 +42,7 @@ const FLOW = [
     tone: "dc-tone-info",
     Icon: ScanSearch,
     title: "扫描并判定",
-    body: "这是谁的、能不能删、删了会怎样。规则优先，未识别的交云端 AI。",
+    body: "这是谁的、能不能删、删了会怎样。默认本地规则，云端辅助需你开启。",
   },
   {
     step: "02",
@@ -70,38 +72,17 @@ const PREVIEW: { path: string; label: string }[] = [
 
 const TRUST = [
   { Icon: Lock, text: "文件内容不出浏览器" },
-  { Icon: Sparkles, text: "仅目录名送 AI，用户名脱敏" },
+  { Icon: Sparkles, text: AI_DIRECTORY_DATA_NOTICE },
   { Icon: Undo2, text: `${QUARANTINE_TTL_DAYS} 天内可一键还原` },
   { Icon: ShieldCheck, text: "绝不自动彻底删除" },
 ] as const;
 
 function defaultActionOf(entry: JudgedEntry): string {
   if (entry.locked || entry.verdict === "keep_locked") return "保留，不参与勾选";
-  if ((entry.hit?.revival.length ?? 0) > 0) return "先诊断断来源，再清理";
+  if ((entry.hit?.revival.includes("process_lock"))) return "正在使用，关闭相关程序后重试";
+  if (rebuildMechanisms(entry.hit?.revival ?? []).length > 0) return "先核对重建来源，再清理";
   if (entry.isEmptyDir) return "空目录，人工判断后再决定";
   return VERDICT_ACTION[entry.verdict];
-}
-
-function reasonOf(entry: JudgedEntry): { purpose: string; reason: string; consequence: string } {
-  if (entry.hit) {
-    return {
-      purpose: entry.hit.purpose,
-      reason: entry.hit.reason,
-      consequence: entry.hit.consequence,
-    };
-  }
-  if (entry.isEmptyDir) {
-    return {
-      purpose: "空目录，不含任何文件。",
-      reason: "可能是软件预留的工作区，也可能是卸载后剩下的空壳，规则不足以判定归属。",
-      consequence: "删错会让软件下次启动时找不到工作目录；建议先确认归属再决定。",
-    };
-  }
-  return {
-    purpose: "未命中指纹库的普通条目。",
-    reason: "按所在目录、名称与扩展名启发式判断，置信度低于规则命中。",
-    consequence: `先移入隔离区观察 ${QUARANTINE_TTL_DAYS} 天，确认无影响后再彻底清理。`,
-  };
 }
 
 export function LandingHero({
@@ -111,7 +92,9 @@ export function LandingHero({
   onPickLocal,
   localSupported = true,
 }: LandingHeroProps) {
-  const [openReason, setOpenReason] = useState<string | null>(null);
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const activeReasonButtonRef = useRef<HTMLButtonElement | null>(null);
 
   const rows = useMemo(() => {
     const tree = sandboxPreviewTree();
@@ -122,6 +105,8 @@ export function LandingHero({
       return entry ? { entry, label } : null;
     }).filter((r): r is { entry: JudgedEntry; label: string } => r !== null);
   }, []);
+
+  const previewEntry = rows.find(({ entry }) => entry.path === previewPath)?.entry ?? null;
 
   const percent = progress && progress.total > 0
     ? Math.min(100, Math.round((progress.created / progress.total) * 100))
@@ -177,7 +162,7 @@ export function LandingHero({
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <Button size="lg" onClick={onGenerate} disabled={generating} className="dc-beam relative overflow-hidden">
               {generating ? <Spinner /> : <HardDrive aria-hidden />}
-              {generating ? "正在进入工作台" : "体验样本清理"}
+              {generating ? "正在进入工作台" : "进入演示模式"}
             </Button>
             <Button
               size="lg"
@@ -199,7 +184,7 @@ export function LandingHero({
             <div className="grid gap-1.5" role="status">
               {percent !== null ? (
                 <>
-                  <Progress value={percent} aria-label="样本生成进度" />
+                  <Progress value={percent} aria-label="演示数据生成进度" />
                   <p className="dc-num text-xs text-muted-foreground">
                     {progress?.created.toLocaleString("zh-CN")} / {progress?.total.toLocaleString("zh-CN")} 个条目
                   </p>
@@ -224,21 +209,18 @@ export function LandingHero({
       <Panel brackets className="dc-rise grid h-fit content-start gap-2.5 p-4 lg:col-span-5">
         <div className="flex items-center gap-2">
           <FlaskConical aria-hidden className="dc-tone-info dc-tone-text size-4 shrink-0" />
-          <h3 className="dc-display text-sm font-semibold tracking-wide">样本磁盘预览</h3>
-          <span className="dc-label ml-auto text-muted-foreground">SANDBOX</span>
+          <h3 className="dc-display text-sm font-semibold tracking-wide">演示模式预览</h3>
+          <span className="dc-label ml-auto text-muted-foreground">SIMULATED</span>
         </div>
 
         <p className="dc-tone-info dc-tone-text flex items-start gap-1.5 text-xs leading-relaxed">
           <ShieldCheck aria-hidden className="mt-0.5 size-4 shrink-0" />
-          以下为浏览器沙箱数据，不读取真实磁盘
+          以下为模拟内容，来自浏览器沙箱，不读取真实磁盘；判定走真实规则管线
         </p>
 
         <ul className="divide-y divide-hairline">
           {rows.map(({ entry, label }) => {
-            const open = openReason === entry.path;
             const KindIcon = entry.kind === "directory" ? Folder : File;
-            const reason = reasonOf(entry);
-            const panelId = `preview-reason-${entry.path.replace(/[^a-zA-Z0-9]/g, "-")}`;
             return (
               <li key={entry.path} className="py-2.5 first:pt-1 last:pb-1">
                 <div className="flex items-start gap-2.5">
@@ -262,36 +244,22 @@ export function LandingHero({
                       <span className="text-xs text-muted-foreground">{defaultActionOf(entry)}</span>
                       <button
                         type="button"
-                        onClick={() => setOpenReason(open ? null : entry.path)}
-                        aria-expanded={open}
-                        aria-controls={panelId}
+                        onClick={(event) => {
+                          activeReasonButtonRef.current = event.currentTarget;
+                          setPreviewPath(entry.path);
+                          setPreviewOpen(true);
+                        }}
+                        aria-haspopup="dialog"
+                        aria-expanded={previewOpen && previewPath === entry.path}
+                        data-preview-path={entry.path}
                         className="dc-press ml-auto inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium text-primary outline-none hover:bg-primary/10 focus-visible:ring-[3px] focus-visible:ring-ring/50"
                       >
                         判定理由
-                        <ChevronDown aria-hidden className={cn("size-3.5 transition-transform duration-200", open && "rotate-180")} />
+                        <ChevronRight aria-hidden className="size-3.5" />
                       </button>
                     </div>
                   </div>
                 </div>
-
-                {open && (
-                  <div id={panelId} className="dc-tone-info mt-2 grid gap-1.5 border-l-2 border-current/40 pl-3 text-xs leading-relaxed">
-                    <p className="text-foreground/90">{reason.purpose}</p>
-                    <p className="text-muted-foreground">
-                      <span className="dc-label mr-1.5">理由</span>
-                      {reason.reason}
-                    </p>
-                    <p className="text-muted-foreground">
-                      <span className="dc-label mr-1.5">后果</span>
-                      {reason.consequence}
-                    </p>
-                    {entry.hit && (
-                      <p className="dc-num text-muted-foreground">
-                        置信度 {Math.round(entry.hit.confidence * 100)}% · #{entry.hit.fingerprintId}
-                      </p>
-                    )}
-                  </div>
-                )}
               </li>
             );
           })}
@@ -299,9 +267,18 @@ export function LandingHero({
 
         <p className="flex items-start gap-1.5 border-t border-hairline pt-2.5 text-xs leading-relaxed text-muted-foreground">
           <RefreshCw aria-hidden className="mt-0.5 size-4 shrink-0" />
-          样本可随时重置；重置会跳过仍在隔离区里的条目，不会把已隔离的内容放回原位置。
+          演示数据可一键重置，不会影响真实文件；重置会跳过仍在隔离区里的条目，不把已隔离内容放回原位置。
         </p>
       </Panel>
+
+      <EntryDrawer
+        entry={previewEntry}
+        open={previewOpen}
+        onOpenChange={setPreviewOpen}
+        preview
+        defaultAction={previewEntry ? defaultActionOf(previewEntry) : undefined}
+        returnFocusRef={activeReasonButtonRef}
+      />
     </div>
   );
 }

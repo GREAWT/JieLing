@@ -1,37 +1,33 @@
 import { useEffect, useRef, useState } from "react";
 import { FlaskConical, HardDrive, Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { PRODUCT_NAME, PRODUCT_TAGLINE } from "@/src/core/constants";
-import type { ScanPhase, ScanSource } from "@/src/core/types";
+import type { ScanSource } from "@/src/core/types";
 import { useTheme } from "@/src/hooks/useTheme";
-import { BrandMark, PHASE_LABEL, ToneDot } from "./shared";
+import { BrandMark } from "./shared";
 
 export interface AppHeaderProps {
   source: ScanSource | null;
   rootLabel?: string;
-  phase: ScanPhase;
   localSupported?: boolean;
   onUseSandbox?: () => void;
   onPickLocal?: () => void;
 }
 
 const SOURCE_META = {
-  sandbox: { label: "样本磁盘", tone: "dc-tone-review", Icon: FlaskConical },
+  sandbox: { label: "演示模式", tone: "dc-tone-review", Icon: FlaskConical },
   local: { label: "真实目录", tone: "dc-tone-safe", Icon: HardDrive },
 } as const;
 
 export function AppHeader({
   source,
   rootLabel,
-  phase,
   localSupported = true,
   onUseSandbox,
   onPickLocal,
 }: AppHeaderProps) {
-  const busy = phase === "scanning" || phase === "judging";
   const { theme, toggle } = useTheme();
   const [scrolled, setScrolled] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -60,9 +56,6 @@ export function AppHeader({
   }, []);
 
   const meta = source ? SOURCE_META[source] : null;
-  const statusTone = phase === "error"
-    ? "dc-tone-danger"
-    : phase === "ready" ? "dc-tone-safe" : "dc-tone-locked";
 
   return (
     <header
@@ -101,12 +94,7 @@ export function AppHeader({
           </span>
         )}
 
-        <span role="status" className="ml-auto flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-          {busy ? <Spinner className="size-3.5 text-primary" /> : <ToneDot tone={statusTone} live={phase === "ready"} />}
-          <span className="hidden sm:inline">{PHASE_LABEL[phase]}</span>
-        </span>
-
-        <span className="flex shrink-0 items-center gap-1">
+        <span className="ml-auto flex shrink-0 items-center gap-1">
           {source !== null && (
             <nav aria-label="切换数据源" className="flex items-center gap-1">
               <Button
@@ -118,8 +106,8 @@ export function AppHeader({
                 className="px-2 sm:px-3"
               >
                 <FlaskConical aria-hidden />
-                <span className="hidden sm:inline">样本磁盘</span>
-                <span className="sr-only sm:hidden">切换到样本磁盘</span>
+                <span className="hidden sm:inline">演示模式</span>
+                <span className="sr-only sm:hidden">切换到演示模式</span>
               </Button>
               <Tooltip>
                 <TooltipTrigger asChild>

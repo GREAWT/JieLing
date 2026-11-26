@@ -1,4 +1,4 @@
-import type { ScanOptions, Verdict } from "./types";
+import type { ScanCoverage, ScanOptions, Verdict } from "./types";
 
 export const PRODUCT_NAME = "洁灵";
 export const PRODUCT_TAGLINE = "AI 磁盘清理决策助手";
@@ -65,6 +65,15 @@ export const VERDICT_ORDER: Record<Verdict, number> = {
   keep_locked: 2,
 };
 
+export const SCAN_COVERAGE_LABEL: Record<ScanCoverage, string> = {
+  complete: "完整扫描",
+  depth_limited: "达到深度上限",
+  entry_limited: "达到条目上限",
+  skipped_children: "含被跳过子目录",
+  permission_partial: "权限不足或读取失败",
+  cancelled: "扫描被手动停止",
+};
+
 export const VERDICT_LABEL: Record<Verdict, string> = {
   safe_delete: "推荐隔离",
   needs_review: "需要确认",
@@ -80,6 +89,8 @@ export const VERDICT_ACTION: Record<Verdict, string> = {
 
 /** AI 判定低于该置信度时，「推荐隔离」一律降档为「需要确认」 */
 export const AI_SAFE_CONFIDENCE = 0.8;
+
+export const AI_DIRECTORY_DATA_NOTICE = "仅发送脱敏后的目录名称、层级、扩展名和统计信息，不发送文件内容。";
 
 export const REVIVAL_LABEL: Record<string, string> = {
   autostart_service: "服务自启重建",
@@ -100,3 +111,15 @@ export const REVIVAL_ORDER: string[] = [
   "missing_uninstaller",
   "driver_protected",
 ];
+
+export const REBUILD_MECHANISMS: ReadonlySet<string> = new Set([
+  "autostart_service", "scheduled_task", "run_key",
+]);
+
+export function rebuildMechanisms(mechanisms: readonly string[]): string[] {
+  return mechanisms.filter((mechanism) => REBUILD_MECHANISMS.has(mechanism));
+}
+
+export function confidenceLabel(value: number): "高" | "中" | "低" {
+  return value >= 0.8 ? "高" : value >= 0.5 ? "中" : "低";
+}

@@ -3,7 +3,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import { VERDICT_ACTION } from "@/src/core/constants";
 import type { JudgedEntry } from "@/src/core/types";
-import { OWNER_KIND_LABEL, RevivalBadge, SizeValue, SourceTag, VerdictBadge } from "./shared";
+import { EntrySemanticBadges, OWNER_KIND_LABEL, RevivalBadge, SizeValue, SourceTag, VerdictBadge } from "./shared";
 
 export interface EntryRowProps {
   entry: JudgedEntry;
@@ -15,10 +15,11 @@ export interface EntryRowProps {
 }
 
 export function entrySummary(entry: JudgedEntry): string {
+  if (entry.hit?.revival.includes("process_lock")) return "正在使用，关闭相关程序后重试；这不是删后重建。";
   if (entry.hit?.reason) return entry.hit.reason;
   if (entry.verdict === "keep_locked") return "位于系统关键位置，禁止清理。";
   if (entry.isEmptyDir) return "空目录：可能是软件预留工作区，也可能是卸载后的空壳，需要人工判断。";
-  return "未命中指纹库，按位置与文件类型启发式判断。";
+  return "未命中本地规则，按位置与文件类型启发式判断。";
 }
 
 export function EntryRow({
@@ -69,13 +70,14 @@ export function EntryRow({
               {entry.hit && entry.hit.revival.length > 0 && (
                 <RevivalBadge mechanisms={entry.hit.revival} interactive={false} />
               )}
+              {entry.hit && <EntrySemanticBadges mechanisms={entry.hit.revival} rebuildable={entry.hit.rebuildable} />}
               <SourceTag source={entry.source} />
             </span>
             <span className="dc-path mt-0.5 block truncate text-muted-foreground">
               {entry.path}
             </span>
             <span className="mt-1 line-clamp-1 block text-xs text-muted-foreground">
-              <span className="text-foreground/80">
+              <span className="text-foreground">
                 身份 {entry.hit?.owner ?? "未识别"}（{OWNER_KIND_LABEL[entry.hit?.ownerKind ?? "unknown"]}）
               </span>
               {" · "}

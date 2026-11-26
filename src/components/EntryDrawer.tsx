@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import {
   Archive,
   Check,
@@ -27,13 +27,14 @@ import {
 } from "@/components/ui/sheet";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
-import { QUARANTINE_TTL_DAYS, REVIVAL_LABEL, REVIVAL_ORDER, VERDICT_LABEL } from "@/src/core/constants";
+import { QUARANTINE_TTL_DAYS, REVIVAL_LABEL, REVIVAL_ORDER, VERDICT_ACTION, VERDICT_LABEL, confidenceLabel, rebuildMechanisms } from "@/src/core/constants";
 import type { JudgedEntry } from "@/src/core/types";
 import { entrySummary } from "./EntryRow";
 import {
   Meter,
   OWNER_KIND_LABEL,
   OwnerKindIcon,
+  EntrySemanticBadges,
   SizeValue,
   SourceTag,
   VerdictBadge,
@@ -45,13 +46,16 @@ export interface EntryDrawerProps {
   entry: JudgedEntry | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  selected: boolean;
-  onToggleSelect: (entry: JudgedEntry, selected: boolean) => void;
-  onQuarantine: (entry: JudgedEntry) => void;
-  onDiagnose: (entry: JudgedEntry) => void;
+  selected?: boolean;
+  onToggleSelect?: (entry: JudgedEntry, selected: boolean) => void;
+  onQuarantine?: (entry: JudgedEntry) => void;
+  onDiagnose?: (entry: JudgedEntry) => void;
   onNavigate?: (delta: number) => void;
   position?: { index: number; total: number } | null;
   busy?: boolean;
+  preview?: boolean;
+  defaultAction?: string;
+  returnFocusRef?: RefObject<HTMLButtonElement | null>;
 }
 
 function purposeOf(entry: JudgedEntry): string {
@@ -62,6 +66,7 @@ function purposeOf(entry: JudgedEntry): string {
 }
 
 function consequenceOf(entry: JudgedEntry): string {
+  if (entry.hit?.revival.includes("process_lock")) return "正在使用，关闭相关程序后重试。进程占用不是删后重建。";
   if (entry.hit?.consequence) return entry.hit.consequence;
   if (entry.verdict === "keep_locked") return "删除可能导致系统或软件无法正常运行。";
   return `先移入隔离区观察 ${QUARANTINE_TTL_DAYS} 天，确认无影响后再彻底清理，期间随时可还原到原位置。`;
@@ -69,7 +74,7 @@ function consequenceOf(entry: JudgedEntry): string {
 
 function verdictLine(entry: JudgedEntry): string {
   if (entry.verdict === "keep_locked") return `${VERDICT_LABEL.keep_locked}：已被系统规则锁定，禁止勾选，也不会被移入隔离区。`;
-  if (entry.verdict === "safe_delete") return `${VERDICT_LABEL.safe_delete}：缓存 / 临时 / 可重建内容，删了不影响使用。`;
+  if (entry.verdict === "safe_delete") return `${VERDICT_LABEL.safe_delete}：命中经过审查的本地指纹；通常可重建，仍需确认软件未运行。`;
   return `${VERDICT_LABEL.needs_review}：可能有价值或有风险，看清依据与后果再决定。`;
 }
 
@@ -108,9 +113,88 @@ function Step({
   );
 }
 
+function PreviewDrawerBody({ entry, defaultAction }: { entry: JudgedEntry; defaultAction?: string }) {
+  const hit = entry.hit;
+  const KindIcon = entry.kind === "directory" ? Folder : File;
+  const reason = entry.hit?.reason ?? entrySummary(entry);
+
+  return (
+    <div data-region="entry-preview-drawer" className="flex min-h-0 flex-1 flex-col">
+      <header className={cn("dc-rail shrink-0 border-b border-border px-4 py-3.5 pr-12", VERDICT_TONE[entry.verdict])}>
+        <div className="flex min-w-0 items-start gap-3">
+          <span className={cn("dc-tone-bg dc-tone-border grid size-10 shrink-0 place-content-center rounded-lg border", VERDICT_TONE[entry.verdict])}>
+            <KindIcon aria-hidden className={cn("dc-tone-text size-5", VERDICT_TONE[entry.verdict])} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="dc-label">样本条目 / READ ONLY</p>
+            <h2 className="dc-display mt-0.5 truncate text-lg font-semibold">{entry.name}</h2>
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+              <VerdictBadge verdict={entry.verdict} />
+              <span className="inline-flex items-baseline gap-1 text-xs text-muted-foreground">
+                <span className="dc-label">占用</span>
+                <SizeValue bytes={entry.size} />
+              </span>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div
+        data-preview-scroll
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4"
+      >
+        <div className="grid min-w-0 gap-4">
+          <section className="grid min-w-0 gap-1">
+            <p className="dc-label">完整路径（相对扫描根）</p>
+            <p className="dc-path min-w-0 break-all text-foreground [overflow-wrap:anywhere]">{entry.path}</p>
+          </section>
+
+          <Step index="1" title="这是什么" tone="dc-tone-info">
+            <p>{purposeOf(entry)}</p>
+          </Step>
+
+          <Step index="2" title="判定理由" tone={VERDICT_TONE[entry.verdict]}>
+            <p>{reason}</p>
+          </Step>
+
+          <Step index="3" title="可能后果" tone="dc-tone-review">
+            <p>{consequenceOf(entry)}</p>
+          </Step>
+
+          <section className="grid gap-1.5 border-t border-hairline pt-4">
+            <p className="dc-label">默认处理方式</p>
+            <p className="text-sm leading-relaxed">{defaultAction ?? VERDICT_ACTION[entry.verdict]}</p>
+          </section>
+
+          <section className="grid gap-3 border-t border-hairline pt-4 sm:grid-cols-2">
+            <div className="grid min-w-0 gap-0.5">
+              <p className="dc-label">判定置信度</p>
+              <p className="dc-num text-sm font-semibold">
+                {hit ? `${confidenceLabel(hit.confidence)}（依据下方匹配证据）` : "低（仅按位置与类型启发式判断）"}
+              </p>
+            </div>
+            <div className="grid min-w-0 gap-0.5">
+              <p className="dc-label">指纹编号</p>
+              <p className="dc-path min-w-0 break-all text-sm">{hit?.fingerprintId ?? "未命中本地规则"}</p>
+            </div>
+          </section>
+          {hit && hit.evidence.length > 0 && (
+            <section className="grid gap-1.5 border-t border-hairline pt-4">
+              <p className="dc-label">匹配证据</p>
+              <ul className="grid gap-1 text-xs leading-relaxed text-muted-foreground">
+                {hit.evidence.map((item) => <li key={item}>· {item}</li>)}
+              </ul>
+            </section>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DrawerBody({
   entry,
-  selected,
+  selected = false,
   onToggleSelect,
   onQuarantine,
   onDiagnose,
@@ -122,7 +206,7 @@ function DrawerBody({
   const locked = entry.locked || entry.verdict === "keep_locked";
   const KindIcon = entry.kind === "directory" ? Folder : File;
   const revival = hit?.revival ?? [];
-  const orderedRevival = [...revival].sort(
+  const orderedRevival = rebuildMechanisms(revival).sort(
     (a, b) => REVIVAL_ORDER.indexOf(a) - REVIVAL_ORDER.indexOf(b),
   );
 
@@ -139,6 +223,7 @@ function DrawerBody({
             <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
               <VerdictBadge verdict={entry.verdict} />
               <SourceTag source={entry.source} />
+              {hit && <EntrySemanticBadges mechanisms={hit.revival} rebuildable={hit.rebuildable} />}
               <SizeValue bytes={entry.size} />
             </div>
           </div>
@@ -220,7 +305,7 @@ function DrawerBody({
               <div className="grid gap-1.5 border-t border-hairline pt-3">
                 <div className="flex items-center justify-between gap-2">
                   <p className="dc-label">判定置信度</p>
-                  <p className="dc-num text-sm font-semibold">{Math.round(hit.confidence * 100)}%</p>
+                  <p className="text-sm font-semibold">{confidenceLabel(hit.confidence)} · 依据已命中的名称、路径或结构条件</p>
                 </div>
                 <Meter
                   value={hit.confidence}
@@ -249,9 +334,9 @@ function DrawerBody({
             </div>
           )}
 
-          {orderedRevival.length > 0 && (
+          {rebuildMechanisms(orderedRevival).length > 0 && onDiagnose && (
             <div className="dc-tone-review grid gap-2 border-t border-hairline pt-4">
-              <p className="dc-label dc-tone-text">复活风险 · 先断来源再删文件</p>
+              <p className="dc-label dc-tone-text">删后重建风险 · 先核对来源再删文件</p>
               <ol className="grid gap-1.5">
                 {orderedRevival.map((m, i) => (
                   <li key={m} className="flex items-start gap-2 text-sm">
@@ -261,7 +346,7 @@ function DrawerBody({
                 ))}
               </ol>
               <p className="text-xs text-muted-foreground">
-                只删文件夹无效：服务、计划任务或注册表会把它重建回来。到「复活诊断」生成只读脚本，切断来源后再清理。
+                服务、计划任务或启动项可能重新创建它。到「顽固软件诊断」生成只读脚本核对来源，确认后再处理。
               </p>
               <Button variant="outline" size="sm" className="w-fit" onClick={() => onDiagnose(entry)}>
                 <Stethoscope aria-hidden />
@@ -282,13 +367,13 @@ function DrawerBody({
           <div className="flex flex-wrap items-center gap-2">
             <Button
               variant={selected ? "secondary" : "outline"}
-              onClick={() => onToggleSelect(entry, !selected)}
+              onClick={() => onToggleSelect?.(entry, !selected)}
               aria-pressed={selected}
             >
               {selected ? <Check aria-hidden /> : <Archive aria-hidden />}
               {selected ? "已勾选" : "勾选这一项"}
             </Button>
-            <Button className="ml-auto" disabled={busy} onClick={() => onQuarantine(entry)}>
+            <Button className="ml-auto" disabled={busy || !onQuarantine} onClick={() => onQuarantine?.(entry)}>
               <Archive aria-hidden />
               移入隔离区
             </Button>
@@ -303,6 +388,9 @@ export function EntryDrawer({
   entry,
   open,
   onOpenChange,
+  preview = false,
+  defaultAction,
+  returnFocusRef,
   ...rest
 }: EntryDrawerProps) {
   const isMobile = useIsMobile();
@@ -319,8 +407,18 @@ export function EntryDrawer({
     if (event.key === "ArrowRight") { event.preventDefault(); onNavigate(1); }
   }, [onNavigate]);
 
+  const handleCloseAutoFocus = useCallback((event: Event) => {
+    if (!returnFocusRef?.current) return;
+    event.preventDefault();
+    requestAnimationFrame(() => returnFocusRef.current?.focus());
+  }, [returnFocusRef]);
+
   if (!entry) return null;
   const description = purposeOf(entry);
+  const title = preview ? `${entry.name} 的样本判定详情` : `${entry.name} 的清理决策详情`;
+  const body = preview
+    ? <PreviewDrawerBody entry={entry} defaultAction={defaultAction} />
+    : <DrawerBody entry={entry} {...rest} />;
 
   // 首帧后再决定形态，避免 SSR/首屏宽度未知时抽屉方向闪跳
   if (!mounted) return null;
@@ -329,10 +427,11 @@ export function EntryDrawer({
     return (
       <Drawer open={open} onOpenChange={onOpenChange} direction="bottom">
         <DrawerContent
-          className="dc-drawer-bottom max-h-[88dvh] gap-0 rounded-t-2xl p-0"
+          className="dc-drawer-bottom max-h-[88dvh] gap-0 overflow-hidden rounded-t-2xl p-0"
           onKeyDown={onKeyDown}
+          onCloseAutoFocus={handleCloseAutoFocus}
         >
-          <DrawerTitle className="sr-only">{entry.name} 的清理决策详情</DrawerTitle>
+          <DrawerTitle className="sr-only">{title}</DrawerTitle>
           <DrawerDescription className="sr-only">{description}</DrawerDescription>
           <button
             type="button"
@@ -342,7 +441,7 @@ export function EntryDrawer({
           >
             <X aria-hidden className="size-4" />
           </button>
-          <DrawerBody entry={entry} {...rest} />
+          {body}
         </DrawerContent>
       </Drawer>
     );
@@ -352,11 +451,12 @@ export function EntryDrawer({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="dc-drawer w-full gap-0 p-0 sm:max-w-md"
+        className="dc-drawer w-full gap-0 overflow-hidden p-0 sm:max-w-md"
         showCloseButton={false}
         onKeyDown={onKeyDown}
+        onCloseAutoFocus={handleCloseAutoFocus}
       >
-        <SheetTitle className="sr-only">{entry.name} 的清理决策详情</SheetTitle>
+        <SheetTitle className="sr-only">{title}</SheetTitle>
         <SheetDescription className="sr-only">{description}</SheetDescription>
         <button
           type="button"
@@ -366,7 +466,7 @@ export function EntryDrawer({
         >
           <X aria-hidden className="size-4" />
         </button>
-        <DrawerBody entry={entry} {...rest} />
+        {body}
       </SheetContent>
     </Sheet>
   );

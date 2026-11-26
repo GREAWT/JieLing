@@ -25,8 +25,9 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { VERDICT_LABEL } from "@/src/core/constants";
-import type { JudgedEntry, OwnerGroup, ScanSource, Verdict } from "@/src/core/types";
+import { reviewDrawerEntries } from "@/src/app/review";
+import { SCAN_COVERAGE_LABEL, VERDICT_LABEL, rebuildMechanisms } from "@/src/core/constants";
+import type { JudgedEntry, OwnerGroup, ScanCoverage, ScanSource, Verdict } from "@/src/core/types";
 import { OwnerGroupCard } from "./OwnerGroupCard";
 import { EmptyState } from "./States";
 import { SizeValue, ToneDot, VERDICT_TONE, formatBytes } from "./shared";
@@ -45,6 +46,7 @@ export interface ReviewBoardProps {
   totalBytes?: number;
   truncated?: boolean;
   stopped?: boolean;
+  coverage?: Partial<Record<ScanCoverage, number>> & { incompleteDirs?: number };
   source?: ScanSource;
   onResetSandbox?: () => void;
   resetting?: boolean;
@@ -79,6 +81,7 @@ export function ReviewBoard({
   totalBytes = 0,
   truncated = false,
   stopped = false,
+  coverage,
   source,
   onResetSandbox,
   resetting = false,
@@ -101,7 +104,7 @@ export function ReviewBoard({
         acc[v].size += g.sizes[v];
         acc[v].count += g.counts[v];
       }
-      if (g.revival.length > 0) revivalGroups += 1;
+      if (rebuildMechanisms(g.revival).length > 0) revivalGroups += 1;
     }
     return { ...acc, revivalGroups };
   }, [groups]);
@@ -112,7 +115,7 @@ export function ReviewBoard({
     for (const g of groups) {
       let entries = g.entries;
       if (filter !== "all") entries = entries.filter((e) => e.verdict === filter);
-      if (onlyRevival) entries = entries.filter((e) => (e.hit?.revival.length ?? 0) > 0);
+      if (onlyRevival) entries = entries.filter((e) => rebuildMechanisms(e.hit?.revival ?? []).length > 0);
       if (q) {
         entries = entries.filter((e) =>
           e.name.toLowerCase().includes(q)
@@ -137,10 +140,7 @@ export function ReviewBoard({
   const actionable = filtered.filter((g) => g.selectableCount > 0);
   const protectedGroups = filtered.filter((g) => g.selectableCount === 0);
   const showProtectedInline = filter === "keep_locked";
-  const visibleEntries = useMemo(
-    () => [...actionable, ...(showProtectedInline ? [] : protectedGroups)].flatMap((g) => g.entries),
-    [actionable, protectedGroups, showProtectedInline],
-  );
+  const visibleEntries = useMemo(() => reviewDrawerEntries(filtered, filter), [filtered, filter]);
   const filtering = filter !== "all" || onlyRevival || query.trim().length > 0;
   const listedCount = visibleEntries.length;
 
@@ -292,7 +292,7 @@ export function ReviewBoard({
           onClick={() => setOnlyRevival((v) => !v)}
         >
           <TriangleAlert aria-hidden />
-          只看会复活
+          只看删后重建风险
         </Button>
 
         {filtering && (
@@ -309,7 +309,7 @@ export function ReviewBoard({
         {source === "sandbox" && onResetSandbox && (
           <Button variant="ghost" size="sm" onClick={onResetSandbox} disabled={resetting}>
             <RefreshCw aria-hidden className={cn(resetting && "animate-spin")} />
-            重置样本
+            重置演示数据
           </Button>
         )}
 
@@ -322,8 +322,21 @@ export function ReviewBoard({
       <p className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-xs text-muted-foreground">
         <span className="dc-label">{FILTER_HINT[filter]}</span>
         {filtering && <span>· 体积为该归属合计，不随筛选变化</span>}
-        {truncated && <span className="dc-tone-review dc-tone-text">· 已达扫描上限，结果不完整</span>}
-        {stopped && <span className="dc-tone-info dc-tone-text">· 已手动停止，这是部分结果</span>}
+        {coverage && (coverage.incompleteDirs ?? 0) > 0 ? (
+          <span className="dc-tone-review dc-tone-text">
+            · {coverage.incompleteDirs} 个目录覆盖不足：
+            {(["depth_limited", "entry_limited", "skipped_children", "permission_partial", "cancelled"] as const)
+              .filter((reason) => (coverage[reason] ?? 0) > 0)
+              .map((reason) => `${SCAN_COVERAGE_LABEL[reason]} ${coverage[reason]}`)
+              .join("、")}
+            ；这些目录已禁止整体隔离
+          </span>
+        ) : (
+          <>
+            {truncated && <span className="dc-tone-review dc-tone-text">· 已达扫描上限，结果不完整</span>}
+            {stopped && <span className="dc-tone-info dc-tone-text">· 已手动停止，这是部分结果</span>}
+          </>
+        )}
         <span>· 中间容器与普通文件不单独列出，点任意一行看抽屉详情</span>
       </p>
 

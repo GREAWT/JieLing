@@ -16,8 +16,8 @@ siblings（同级条目通配）、requireSiblings（true 表示 siblings 必须
 - verdict: safe_delete
 - confidence: 0.95
 - rebuildable: true
-- reason: 这里面的每一行代码都来自 npm 仓库，不是你自己写的。只要项目里的 package.json 还在，随时能原样装回来。
-- consequence: 删掉后项目暂时跑不起来，在项目目录执行 npm install（或 pnpm/yarn install）即可完整恢复，需要联网和几分钟时间。
+- reason: 通常为项目依赖目录，可通过包管理器重新安装；隔离前请确认项目未运行，并保留package.json与锁文件。
+- consequence: 隔离后项目可能暂时无法运行。重新安装依赖需要网络与相应包管理器，版本与构建结果不保证与之前完全一致。
 - revival: none
 
 ## pnpm-store

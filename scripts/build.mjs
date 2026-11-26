@@ -2,7 +2,7 @@ import './check-node.mjs';
 // Set this before importing Vite: the desktop terminal can inherit development mode.
 process.env.NODE_ENV = 'production';
 
-// 知识库 md 打包成可安装的 Skill 产物。规则直接从 src/knowledge/rules 复制，
+// 规则 md 与方法论文档打包为 Skill 文档下载。规则直接从 src/knowledge/rules 复制，
 // 不在 skill/ 下留第二份，避免与唯一真源漂移。
 // 写进 public/ 而非 dist/：Vite 原样复制到 dist，开发服务器也能访问同一批 URL。
 const { cp, mkdir, readdir, rm } = await import('node:fs/promises');

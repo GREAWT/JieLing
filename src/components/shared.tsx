@@ -12,6 +12,7 @@ import {
   Sparkles,
   TriangleAlert,
   Wrench,
+  RefreshCw,
 } from "lucide-react";
 import {
   HoverCard,
@@ -19,7 +20,7 @@ import {
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
-import { REVIVAL_LABEL, VERDICT_LABEL } from "@/src/core/constants";
+import { REVIVAL_LABEL, VERDICT_LABEL, rebuildMechanisms } from "@/src/core/constants";
 import type {
   OwnerKind,
   RevivalMechanism,
@@ -135,11 +136,12 @@ export function RevivalBadge({
   className?: string;
   interactive?: boolean;
 }) {
-  if (mechanisms.length === 0) return null;
+  const rebuilds = rebuildMechanisms(mechanisms);
+  if (rebuilds.length === 0) return null;
   const badge = (
     <span
       tabIndex={interactive ? 0 : undefined}
-      title={interactive ? undefined : mechanisms.map((m) => REVIVAL_LABEL[m] ?? m).join("、")}
+      title={interactive ? undefined : `删后重建风险：${rebuilds.map((m) => REVIVAL_LABEL[m] ?? m).join("、")}`}
       className={cn(
         "dc-tone-review dc-tone-bg dc-tone-text dc-tone-border inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium",
         interactive && "cursor-help",
@@ -147,7 +149,7 @@ export function RevivalBadge({
       )}
     >
       <TriangleAlert aria-hidden className="size-3.5" />
-      会复活
+      删后重建风险
     </span>
   );
   if (!interactive) return badge;
@@ -155,9 +157,9 @@ export function RevivalBadge({
     <HoverCard openDelay={120} closeDelay={80}>
       <HoverCardTrigger asChild>{badge}</HoverCardTrigger>
       <HoverCardContent align="start" className="dc-panel w-72 text-sm">
-        <p className="dc-display font-semibold">删掉后会被重建</p>
+        <p className="dc-display font-semibold">检测到具体重建机制</p>
         <ul className="mt-2 grid gap-1 text-muted-foreground">
-          {mechanisms.map((m) => (
+          {rebuilds.map((m) => (
             <li key={m} className="flex items-center gap-2">
               <span aria-hidden className="dc-tone-review dc-tone-text size-1.5 rounded-full bg-current" />
               {REVIVAL_LABEL[m] ?? m}
@@ -165,16 +167,44 @@ export function RevivalBadge({
           ))}
         </ul>
         <p className="mt-2 text-xs text-muted-foreground">
-          先运行复活诊断断掉源头，再清理文件。
+          先运行顽固软件诊断核对来源，再清理文件。
         </p>
       </HoverCardContent>
     </HoverCard>
   );
 }
 
+export function EntrySemanticBadges({ mechanisms, rebuildable }: { mechanisms: RevivalMechanism[]; rebuildable: boolean }) {
+  return (
+    <>
+      {rebuildable && (
+        <span className="dc-tone-info dc-tone-bg dc-tone-text dc-tone-border inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium" title="可由对应软件或包管理器重新生成，不等于删后会复活">
+          <RefreshCw aria-hidden className="size-3" />可重建缓存
+        </span>
+      )}
+      {mechanisms.includes("process_lock") && (
+        <span className="dc-tone-review dc-tone-bg dc-tone-text dc-tone-border inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium" title="正在使用，关闭相关程序后重试">
+          <Lock aria-hidden className="size-3" />进程占用
+        </span>
+      )}
+      {mechanisms.some((m) => m === "missing_uninstaller" || m === "driver_protected") && (
+        <span className="dc-tone-review dc-tone-bg dc-tone-text dc-tone-border inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium" title="卸载残留或保护机制，请优先使用官方卸载器">
+          <Package aria-hidden className="size-3" />卸载残留
+        </span>
+      )}
+      {mechanisms.includes("shell_namespace") && (
+        <span className="dc-tone-info dc-tone-bg dc-tone-text dc-tone-border inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium" title="资源管理器中的虚拟文件夹登记，不是磁盘文件重建">
+          <MonitorCog aria-hidden className="size-3" />虚拟文件夹
+        </span>
+      )}
+    </>
+  );
+}
+
 const SOURCE_META = {
-  fingerprint: { label: "指纹库", Icon: Fingerprint, tone: "dc-tone-info" },
-  ai: { label: "AI 判断", Icon: Sparkles, tone: "dc-tone-ai" },
+  fingerprint: { label: "本地规则", Icon: Fingerprint, tone: "dc-tone-info" },
+  ai: { label: "AI 辅助分析", Icon: Sparkles, tone: "dc-tone-ai" },
+  cache: { label: "共享判定缓存", Icon: Database, tone: "dc-tone-locked" },
   heuristic: { label: "启发式", Icon: Ruler, tone: "dc-tone-locked" },
 } as const;
 

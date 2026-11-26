@@ -1,9 +1,9 @@
-import type { ScanEntry, ScanOptions, ScanProgress } from "../core/types";
+import type { ScanCoverage, ScanEntry, ScanOptions, ScanProgress } from "../core/types";
 
 export type ScanWorkerMessage =
   | { type: "batch"; entries: ScanEntry[]; progress: ScanProgress }
   | { type: "done"; progress: ScanProgress }
-  | { type: "cancelled" }
+  | { type: "cancelled"; progress: ScanProgress }
   | { type: "error"; message: string };
 
 interface DirAggregate {
@@ -12,6 +12,7 @@ interface DirAggregate {
   lastModified: number;
   childIds: string[];
   rawChildCount: number;
+  coverage: Set<ScanCoverage>;
 }
 
 class ScanCancelledError extends Error {
@@ -22,6 +23,16 @@ class ScanCancelledError extends Error {
 }
 
 const BATCH_SIZE = 200;
+
+function directoryCoverage(coverage: ReadonlySet<ScanCoverage>): ScanCoverage[] {
+  return coverage.size > 0 ? [...coverage] : ["complete"];
+}
+
+function mergeCoverage(target: Set<ScanCoverage>, source: readonly ScanCoverage[]): void {
+  for (const reason of source) {
+    if (reason !== "complete") target.add(reason);
+  }
+}
 
 export async function runScan(
   root: FileSystemDirectoryHandle,
@@ -36,6 +47,7 @@ export async function runScan(
   let bytes = 0;
   let currentPath = "";
   let truncated = false;
+  let stopped = false;
 
   const progress = (phase: ScanProgress["phase"]): ScanProgress => ({
     phase,
@@ -43,6 +55,7 @@ export async function runScan(
     bytes,
     currentPath,
     truncated,
+    ...(stopped ? { stopped: true } : {}),
   });
 
   const flush = (): void => {
@@ -63,75 +76,110 @@ export async function runScan(
   };
 
   async function scanDir(dirHandle: FileSystemDirectoryHandle, dirPath: string, childDepth: number): Promise<DirAggregate> {
-    const agg: DirAggregate = { size: 0, fileCount: 0, lastModified: 0, childIds: [], rawChildCount: 0 };
-    for await (const handle of dirHandle.values()) {
-      checkCancelled();
-      if (visitedCount >= options.maxEntries) {
-        truncated = true;
-        break;
-      }
-      agg.rawChildCount++;
-      const name = handle.name;
-      if (handle.kind === "directory" && skipDirs.has(name)) continue;
-      const path = dirPath ? `${dirPath}/${name}` : name;
-      if (visited.has(path)) continue;
-      visited.add(path);
-      currentPath = path;
+    const agg: DirAggregate = {
+      size: 0,
+      fileCount: 0,
+      lastModified: 0,
+      childIds: [],
+      rawChildCount: 0,
+      coverage: new Set(),
+    };
+    try {
+      for await (const handle of dirHandle.values()) {
+        checkCancelled();
+        if (visitedCount >= options.maxEntries) {
+          truncated = true;
+          agg.coverage.add("entry_limited");
+          break;
+        }
+        agg.rawChildCount++;
+        const name = handle.name;
+        if (handle.kind === "directory" && skipDirs.has(name)) {
+          // 被跳过的子树既没有体积也不知道内容，必须让父目录失去整体隔离资格
+          agg.coverage.add("skipped_children");
+          continue;
+        }
+        const path = dirPath ? `${dirPath}/${name}` : name;
+        if (visited.has(path)) continue;
+        visited.add(path);
+        currentPath = path;
 
-      const entry: ScanEntry = {
-        id: path,
-        path,
-        name,
-        kind: handle.kind,
-        size: 0,
-        fileCount: handle.kind === "file" ? 1 : 0,
-        lastModified: 0,
-        depth: childDepth,
-        isEmptyDir: false,
-        parentId: dirPath === "" ? null : dirPath,
-        childIds: [],
-      };
+        const entry: ScanEntry = {
+          id: path,
+          path,
+          name,
+          kind: handle.kind,
+          size: 0,
+          fileCount: handle.kind === "file" ? 1 : 0,
+          lastModified: 0,
+          depth: childDepth,
+          isEmptyDir: false,
+          parentId: dirPath === "" ? null : dirPath,
+          childIds: [],
+          coverage: ["complete"],
+        };
 
-      if (handle.kind === "file") {
-        if (options.collectSizes) {
-          const file = await (handle as FileSystemFileHandle).getFile();
-          entry.size = file.size;
-          entry.lastModified = file.lastModified;
+        if (handle.kind === "file") {
+          try {
+            if (options.collectSizes) {
+              const file = await (handle as FileSystemFileHandle).getFile();
+              entry.size = file.size;
+              entry.lastModified = file.lastModified;
+            }
+          } catch {
+            // 单个文件读不到时保留条目，但父目录不能被视为完整覆盖
+            agg.coverage.add("permission_partial");
+          }
+          agg.size += entry.size;
+          agg.fileCount += 1;
+          agg.lastModified = Math.max(agg.lastModified, entry.lastModified);
+          agg.childIds.push(path);
+          bytes += entry.size;
+          pushEntry(entry);
+          continue;
+        }
+
+        const subDir = handle as FileSystemDirectoryHandle;
+        let childAgg: DirAggregate;
+        if (childDepth < options.maxDepth) {
+          childAgg = await scanDir(subDir, path, childDepth + 1);
+        } else {
+          // 达到深度上限后不再枚举整棵子树；即使恰好为空也按不完整处理，避免误导。
+          truncated = true;
+          childAgg = {
+            size: 0, fileCount: 0, lastModified: 0, childIds: [], rawChildCount: 0,
+            coverage: new Set(["depth_limited"]),
+          };
+          try {
+            const first = await subDir.values().next();
+            if (!first.done) childAgg.rawChildCount = 1;
+          } catch {
+            childAgg.coverage.add("permission_partial");
+          }
+        }
+        entry.size = childAgg.size;
+        entry.fileCount = childAgg.fileCount;
+        entry.lastModified = childAgg.lastModified;
+        entry.childIds = childAgg.childIds;
+        entry.isEmptyDir = childAgg.rawChildCount === 0;
+        entry.coverage = directoryCoverage(childAgg.coverage);
+        mergeCoverage(agg.coverage, entry.coverage);
+        if (visitedCount >= options.maxEntries) {
+          truncated = true;
+          agg.coverage.add("entry_limited");
+          entry.coverage = directoryCoverage(new Set([...entry.coverage, "entry_limited"]));
         }
         agg.size += entry.size;
-        agg.fileCount += 1;
+        agg.fileCount += entry.fileCount;
         agg.lastModified = Math.max(agg.lastModified, entry.lastModified);
         agg.childIds.push(path);
-        bytes += entry.size;
         pushEntry(entry);
-        continue;
+        if (visitedCount >= options.maxEntries) break;
       }
-
-      const subDir = handle as FileSystemDirectoryHandle;
-      let childAgg: DirAggregate;
-      if (childDepth < options.maxDepth) {
-        childAgg = await scanDir(subDir, path, childDepth + 1);
-      } else {
-        // 深度截断：只探一个子项判断是否非空，避免误报 isEmptyDir
-        const first = await subDir.values().next();
-        childAgg = { size: 0, fileCount: 0, lastModified: 0, childIds: [], rawChildCount: first.done ? 0 : 1 };
-        if (!first.done) truncated = true;
-      }
-      entry.size = childAgg.size;
-      entry.fileCount = childAgg.fileCount;
-      entry.lastModified = childAgg.lastModified;
-      entry.childIds = childAgg.childIds;
-      entry.isEmptyDir = childAgg.rawChildCount === 0;
-      // 递归返回后再次检查上限，避免回溯途中继续压入祖先目录导致超出 maxEntries
-      if (visitedCount >= options.maxEntries) {
-        truncated = true;
-        break;
-      }
-      agg.size += entry.size;
-      agg.fileCount += entry.fileCount;
-      agg.lastModified = Math.max(agg.lastModified, entry.lastModified);
-      agg.childIds.push(path);
-      pushEntry(entry);
+    } catch (err) {
+      if (err instanceof ScanCancelledError || isCancelled()) throw err;
+      // 目录枚举中途失去权限：保留已发现内容，标记部分覆盖，不把失败伪装成空目录
+      agg.coverage.add("permission_partial");
     }
     return agg;
   }
@@ -145,7 +193,8 @@ export async function runScan(
     emit({ type: "done", progress: progress("ready") });
   } catch (err) {
     if (err instanceof ScanCancelledError || isCancelled()) {
-      emit({ type: "cancelled" });
+      stopped = true;
+      emit({ type: "cancelled", progress: progress("ready") });
       return;
     }
     emit({ type: "error", message: err instanceof Error ? err.message : String(err) });

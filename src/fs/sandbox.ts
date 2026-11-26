@@ -2,7 +2,7 @@ import { QUARANTINE_DIR } from "../core/constants";
 import type { ScanEntry } from "../core/types";
 import { ensureDirectoryPath, errorMessage, writeTextFile } from "./adapter";
 
-export const SANDBOX_LABEL = "样本磁盘（沙盒）";
+export const SANDBOX_LABEL = "演示模式（模拟数据）";
 export const SANDBOX_MARKER = ".dareclean-sandbox.json";
 
 interface SandboxOp {
@@ -339,6 +339,7 @@ export function sandboxPreviewTree(): ScanEntry[] {
       isEmptyDir: true,
       parentId,
       childIds: [],
+      coverage: ["complete"],
     };
     nodes.set(path, node);
     return node;
@@ -375,6 +376,7 @@ export function sandboxPreviewTree(): ScanEntry[] {
           isEmptyDir: false,
           parentId,
           childIds: [],
+          coverage: ["complete"],
         }
       : ensureDir(op.path, depth, parentId);
 
@@ -470,7 +472,7 @@ export async function generateSandbox(
   }, null, 2));
 }
 
-/** 样本磁盘是否已生成过：已生成时「样本磁盘」只重新扫描，不再重写整棵树。 */
+/** 演示数据是否已生成过：已生成时「演示模式」只重新扫描，不再重写整棵树。 */
 export async function sandboxReady(root: FileSystemDirectoryHandle): Promise<boolean> {
   try {
     await root.getFileHandle(SANDBOX_MARKER);

@@ -11,6 +11,8 @@ export {
 export { QuarantineView, type QuarantineViewProps } from "./QuarantineView";
 export { DiagnosePanel, type DiagnosePanelProps } from "./DiagnosePanel";
 export { LandingHero, type LandingHeroProps } from "./LandingHero";
+export { RulesPanel } from "./RulesPanel";
+export { RevivalSummary, type RevivalSummaryProps } from "./RevivalSummary";
 export {
   EmptyState,
   ErrorState,

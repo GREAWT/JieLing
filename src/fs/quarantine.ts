@@ -9,6 +9,7 @@ import type {
   RestoreOutcome,
   RestorePolicy,
 } from "../core/types";
+import { canQuarantineEntry } from "../safety/guard";
 import {
   copyDirectoryContents,
   ensureDirectoryPath,
@@ -25,6 +26,29 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** 超过该体积的文件改用首尾采样哈希，避免整文件读入内存 */
 const FULL_HASH_LIMIT = 32 * 1024 * 1024;
 const SAMPLE_BYTES = 1024 * 1024;
+
+class SnapshotMismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SnapshotMismatchError";
+  }
+}
+
+class TransferSafetyError extends Error {
+  keepDestination: boolean;
+  constructor(message: string, keepDestination: boolean) {
+    super(message);
+    this.name = "TransferSafetyError";
+    this.keepDestination = keepDestination;
+  }
+}
+
+class IntegrityMismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "IntegrityMismatchError";
+  }
+}
 
 function makeId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -63,7 +87,7 @@ function isValidRecord(value: unknown): value is QuarantineRecord {
 }
 
 const STATUSES: QuarantineStatus[] = [
-  "processing", "quarantined", "quarantine_failed", "restored", "restore_failed",
+  "processing", "quarantined", "quarantine_failed", "restored", "restore_failed", "needs_reconcile",
 ];
 
 /** 旧版清单没有状态/校验字段：按已有信息补齐，不丢记录 */
@@ -80,50 +104,240 @@ function normalizeRecord(r: QuarantineRecord): QuarantineRecord {
   };
 }
 
-async function rebuildManifest(qDir: FileSystemDirectoryHandle): Promise<QuarantineRecord[]> {
-  const records: QuarantineRecord[] = [];
-  const now = Date.now();
-  for await (const handle of qDir.values()) {
-    if (handle.name === MANIFEST_NAME || JOURNAL_NAMES.includes(handle.name)) continue;
-    const parsed = parseQuarantineName(handle.name);
-    records.push(normalizeRecord({
-      id: parsed?.id ?? makeId(),
-      originalPath: parsed?.originalPath ?? handle.name,
-      quarantinePath: `${QUARANTINE_DIR}/${handle.name}`,
-      size: 0,
-      kind: handle.kind as EntryKind,
-      quarantinedAt: now,
-      expiresAt: now + QUARANTINE_TTL_DAYS * DAY_MS,
-      owner: "unknown",
-      reason: "manifest 损坏，已按隔离区实际内容重建（体积未知，按重建时间重新计期）",
-      restored: false,
-      modifiedAt: 0,
-      checksum: "",
-      checksumAlgo: "none",
-      status: "quarantined",
-      updatedAt: now,
-    }));
-  }
-  await writeManifest(qDir, records);
-  return records;
+function isReservedQuarantineName(name: string): boolean {
+  return name === MANIFEST_NAME
+    || JOURNAL_NAMES.includes(name)
+    || name.startsWith("manifest.corrupt-")
+    || name.startsWith("manifest-invalid-");
 }
 
-async function readManifest(qDir: FileSystemDirectoryHandle): Promise<QuarantineRecord[]> {
-  let fileHandle: FileSystemFileHandle;
+async function writeTextHandle(
+  parent: FileSystemDirectoryHandle,
+  name: string,
+  text: string,
+): Promise<void> {
+  const fileHandle = await parent.getFileHandle(name, { create: true });
+  const writable = await fileHandle.createWritable();
+  try {
+    await writable.write(text);
+    await writable.close();
+  } catch (err) {
+    try {
+      await writable.abort();
+    } catch {
+      // abort 失败不掩盖原始错误
+    }
+    throw err;
+  }
+}
+
+async function pathState(root: FileSystemDirectoryHandle, path: string): Promise<"present" | "absent" | "unknown"> {
+  const parts = path.split("/").filter((part) => part.length > 0 && part !== ".");
+  if (parts.length === 0 || parts.includes("..")) return "unknown";
+  let dir = root;
+  for (const part of parts.slice(0, -1)) {
+    try {
+      dir = await dir.getDirectoryHandle(part);
+    } catch (err) {
+      if (isNotFoundError(err)) return "absent";
+      return "unknown";
+    }
+  }
+  const name = parts[parts.length - 1];
+  try {
+    await dir.getFileHandle(name);
+    return "present";
+  } catch (err) {
+    if (!isNotFoundError(err) && !(err instanceof DOMException && err.name === "TypeMismatchError")) {
+      return "unknown";
+    }
+  }
+  try {
+    await dir.getDirectoryHandle(name);
+    return "present";
+  } catch (err) {
+    if (isNotFoundError(err)) return "absent";
+    return "unknown";
+  }
+}
+
+async function actualQuarantineEntries(qDir: FileSystemDirectoryHandle): Promise<Map<string, FileSystemHandle>> {
+  const actual = new Map<string, FileSystemHandle>();
+  for await (const handle of qDir.values()) {
+    if (!isReservedQuarantineName(handle.name)) actual.set(handle.name, handle);
+  }
+  return actual;
+}
+
+function reconcileNote(record: QuarantineRecord, reason: string): void {
+  record.status = "needs_reconcile";
+  record.restored = false;
+  record.note = record.note ? `${record.note}；${reason}` : reason;
+  record.updatedAt = Date.now();
+}
+
+function syntheticRecordFromRaw(raw: unknown, index: number, sidecar: string): QuarantineRecord {
+  const value = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const now = Date.now();
+  return {
+    id: typeof value.id === "string" && value.id ? value.id.slice(0, 120) : `invalid-${index}-${makeId()}`,
+    originalPath: typeof value.originalPath === "string" && value.originalPath
+      ? value.originalPath : `(非法清单记录 ${index + 1})`,
+    quarantinePath: typeof value.quarantinePath === "string" && value.quarantinePath
+      ? value.quarantinePath : `${QUARANTINE_DIR}/invalid-${index}`,
+    size: typeof value.size === "number" && Number.isFinite(value.size) ? value.size : 0,
+    kind: value.kind === "directory" ? "directory" : "file",
+    quarantinedAt: typeof value.quarantinedAt === "number" ? value.quarantinedAt : now,
+    expiresAt: typeof value.expiresAt === "number" ? value.expiresAt : now + QUARANTINE_TTL_DAYS * DAY_MS,
+    owner: typeof value.owner === "string" ? value.owner : "unknown",
+    reason: typeof value.reason === "string" ? value.reason : "清单记录损坏，需要恢复检查",
+    restored: false,
+    modifiedAt: typeof value.modifiedAt === "number" ? value.modifiedAt : 0,
+    checksum: typeof value.checksum === "string" ? value.checksum : "",
+    checksumAlgo: "none",
+    status: "needs_reconcile",
+    updatedAt: now,
+    note: `隔离清单中的这条记录不完整或非法，原始内容已保存到 ${sidecar}；不会自动删除任何一边。`,
+  };
+}
+
+function syntheticRecordFromOrphan(name: string, handle: FileSystemHandle): QuarantineRecord {
+  const parsed = parseQuarantineName(name);
+  const now = Date.now();
+  return {
+    id: parsed?.id ?? `orphan-${makeId()}`,
+    originalPath: parsed?.originalPath ?? `(无法解析的隔离副本 ${name})`,
+    quarantinePath: `${QUARANTINE_DIR}/${name}`,
+    size: 0,
+    kind: handle.kind as EntryKind,
+    quarantinedAt: now,
+    expiresAt: now + QUARANTINE_TTL_DAYS * DAY_MS,
+    owner: "unknown",
+    reason: "隔离区存在没有清单记录的副本",
+    restored: false,
+    modifiedAt: 0,
+    checksum: "",
+    checksumAlgo: "none",
+    status: "needs_reconcile",
+    updatedAt: now,
+    note: "隔离区存在无清单记录的副本，无法确定来源与原位置；已标记为需要恢复检查，不会自动删除。",
+  };
+}
+
+async function readManifest(
+  root: FileSystemDirectoryHandle,
+  qDir: FileSystemDirectoryHandle,
+): Promise<QuarantineRecord[]> {
+  let records: QuarantineRecord[] = [];
+  let changed = false;
+  let fileHandle: FileSystemFileHandle | null = null;
   try {
     fileHandle = await qDir.getFileHandle(MANIFEST_NAME);
   } catch (err) {
-    if (isNotFoundError(err)) return [];
-    throw new Error(`读取隔离清单失败: ${errorMessage(err)}`, { cause: err });
+    if (!isNotFoundError(err)) throw new Error(`读取隔离清单失败: ${errorMessage(err)}`, { cause: err });
   }
-  const text = await (await fileHandle.getFile()).text();
-  try {
-    const parsed: unknown = JSON.parse(text);
-    if (Array.isArray(parsed)) return parsed.filter(isValidRecord).map(normalizeRecord);
-  } catch {
-    // 损坏时按目录实际内容重建
+
+  if (fileHandle) {
+    const text = await (await fileHandle.getFile()).text();
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (!Array.isArray(parsed)) throw new Error("manifest is not an array");
+      const invalid: unknown[] = [];
+      for (const entry of parsed) {
+        if (isValidRecord(entry)) records.push(normalizeRecord(entry));
+        else invalid.push(entry);
+      }
+      if (invalid.length > 0) {
+        const sidecar = `manifest-invalid-${Date.now()}.json`;
+        await writeTextHandle(qDir, sidecar, JSON.stringify(invalid, null, 2));
+        records.push(...invalid.map((entry, index) => syntheticRecordFromRaw(entry, index, sidecar)));
+        changed = true;
+      }
+    } catch {
+      // 损坏清单原样归档，绝不静默丢弃可能指向唯一副本的线索
+      const backup = `manifest.corrupt-${Date.now()}.json`;
+      await writeTextHandle(qDir, backup, text);
+      records = [syntheticRecordFromRaw({
+        id: `manifest-corrupt-${Date.now()}`,
+        originalPath: "(隔离清单)",
+        quarantinePath: `${QUARANTINE_DIR}/${MANIFEST_NAME}`,
+        kind: "file",
+        reason: "隔离清单无法解析",
+        note: `原始清单已保存到 ${backup}`,
+      }, 0, backup)];
+      changed = true;
+    }
   }
-  return rebuildManifest(qDir);
+
+  const actual = await actualQuarantineEntries(qDir);
+  const knownNames = new Set<string>();
+  for (const record of records) {
+    let relative = "";
+    try {
+      relative = relativeToQuarantine(record);
+    } catch {
+      reconcileNote(record, "清单中的隔离路径非法，无法核对副本位置。");
+      changed = true;
+      continue;
+    }
+    knownNames.add(relative);
+    if (record.status === "needs_reconcile") continue;
+    const handle = actual.get(relative);
+    const original = await pathState(root, record.originalPath);
+
+    if (record.status === "restored") {
+      if (handle) {
+        reconcileNote(record, "记录显示已还原，但隔离区仍存在对应副本，需要恢复检查。");
+        changed = true;
+      }
+      continue;
+    }
+
+    if (record.status === "processing") {
+      reconcileNote(record, "启动时发现上次操作停留在「处理中」，无法确定原位置与隔离副本哪一边完整。");
+      changed = true;
+      continue;
+    }
+
+    if (record.status === "restore_failed") {
+      reconcileNote(record, "启动时发现上次还原失败，原位置与隔离副本状态需要人工核对。");
+      changed = true;
+      continue;
+    }
+
+    if (record.status === "quarantine_failed") {
+      if (handle || original !== "present") {
+        reconcileNote(record, handle
+          ? "记录为隔离失败，但隔离区存在副本，需核对哪一边完整。"
+          : "记录为隔离失败，但原位置也不存在，无法定位完整内容。");
+        changed = true;
+      }
+      continue;
+    }
+
+    // quarantined：原位置出现同名内容属于可处理的还原冲突，保留记录让用户选择「跳过/保留两份」
+    if (!handle) {
+      reconcileNote(record, original === "present"
+        ? "清单记录的隔离副本不存在，但原位置有同名内容；不能据此判断已还原。"
+        : "清单记录的隔离副本不存在，原位置也没有内容，需要恢复检查。");
+      changed = true;
+    } else if (original === "unknown") {
+      reconcileNote(record, "无法确认原位置是否为空，需要恢复检查。");
+      changed = true;
+    } else if (handle.kind !== record.kind) {
+      reconcileNote(record, "隔离副本的类型与清单记录不一致，需要恢复检查。");
+      changed = true;
+    }
+  }
+
+  for (const [name, handle] of actual) {
+    if (knownNames.has(name)) continue;
+    records.push(syntheticRecordFromOrphan(name, handle));
+    changed = true;
+  }
+
+  if (changed) await writeManifest(qDir, records);
+  return records;
 }
 
 async function writeManifest(qDir: FileSystemDirectoryHandle, records: QuarantineRecord[]): Promise<void> {
@@ -179,23 +393,29 @@ async function hashFile(handle: FileSystemFileHandle): Promise<FileChecksum> {
 interface TreeListing {
   lines: string[];
   dirCount: number;
+  fileCount: number;
   bytes: number;
+  lastModified: number;
 }
 
 async function walkTree(dir: FileSystemDirectoryHandle, prefix = ""): Promise<TreeListing> {
-  const out: TreeListing = { lines: [], dirCount: 0, bytes: 0 };
+  const out: TreeListing = { lines: [], dirCount: 0, fileCount: 0, bytes: 0, lastModified: 0 };
   for await (const handle of dir.values()) {
     const rel = prefix ? `${prefix}/${handle.name}` : handle.name;
     if (handle.kind === "file") {
-      const size = (await (handle as FileSystemFileHandle).getFile()).size;
-      out.lines.push(`${rel}\t${size}`);
-      out.bytes += size;
+      const file = await (handle as FileSystemFileHandle).getFile();
+      out.lines.push(`${rel}\t${file.size}`);
+      out.bytes += file.size;
+      out.fileCount += 1;
+      out.lastModified = Math.max(out.lastModified, file.lastModified);
     } else {
       out.dirCount += 1;
       const sub = await walkTree(handle as FileSystemDirectoryHandle, rel);
       out.lines.push(...sub.lines);
       out.dirCount += sub.dirCount;
+      out.fileCount += sub.fileCount;
       out.bytes += sub.bytes;
+      out.lastModified = Math.max(out.lastModified, sub.lastModified);
     }
   }
   out.lines.sort();
@@ -208,7 +428,39 @@ async function treeChecksum(dir: FileSystemDirectoryHandle): Promise<string> {
   return sha256Hex(new TextEncoder().encode(text).buffer as ArrayBuffer);
 }
 
-/** 复制单个文件并逐字节校验：校验不过就删掉副本，原文件不动 */
+/**
+ * 移动/隔离前复核扫描快照。目录只比较类型、文件数、总大小、最大修改时间和是否为空；
+ * 这能发现扫描后新增、删除、替换或覆盖，但不声称逐字节比对所有内容。
+ */
+export async function verifyEntrySnapshot(
+  root: FileSystemDirectoryHandle,
+  entry: JudgedEntry,
+): Promise<void> {
+  let handle: FileSystemHandle;
+  try {
+    handle = await resolveHandle(root, entry.path);
+  } catch (err) {
+    throw new SnapshotMismatchError(`扫描后无法再访问「${entry.path}」：${errorMessage(err)}。请重新扫描。`);
+  }
+  if (handle.kind !== entry.kind) {
+    throw new SnapshotMismatchError(`「${entry.path}」的类型已从${entry.kind === "file" ? "文件" : "目录"}变化，请重新扫描。`);
+  }
+  if (handle.kind === "file") {
+    const file = await (handle as FileSystemFileHandle).getFile();
+    if (file.size !== entry.size || file.lastModified !== entry.lastModified) {
+      throw new SnapshotMismatchError(`「${entry.path}」的大小或修改时间已变化，请重新扫描后再隔离。`);
+    }
+    return;
+  }
+  const listing = await walkTree(handle as FileSystemDirectoryHandle);
+  const emptyChanged = entry.isEmptyDir && (listing.fileCount > 0 || listing.dirCount > 0);
+  const modifiedChanged = entry.lastModified > 0 && listing.lastModified !== entry.lastModified;
+  if (listing.bytes !== entry.size || listing.fileCount !== entry.fileCount || emptyChanged || modifiedChanged) {
+    throw new SnapshotMismatchError(`「${entry.path}」的内容、文件数或修改时间与扫描时不一致，请重新扫描后再隔离。`);
+  }
+}
+
+/** 复制单个文件并按记录的哈希算法校验；校验不过只删除副本，原文件不动 */
 async function copyFileVerified(
   src: FileSystemFileHandle,
   destParent: FileSystemDirectoryHandle,
@@ -251,7 +503,7 @@ interface TransferResult extends FileChecksum {
 
 /**
  * 文件转移：优先原生 move（原子），不支持或失败时降级为「复制→校验→删原」。
- * 任何一步失败都保证原文件仍在原位置。
+ * 原文件已在移动/复制后消失但结果不确定时，保留目标副本并要求人工对账。
  */
 async function transferFile(
   src: FileSystemFileHandle,
@@ -267,10 +519,17 @@ async function transferFile(
       await src.move(destParent, destName);
       moved = true;
     } catch (err) {
-      // move 不可用或中途失败：回到复制校验路径，原文件此时仍在原处
+      // move 不可用或没有发生：回到复制校验路径，原文件此时仍在原处
       await destParent.removeEntry(destName).catch(() => undefined);
       const copied = await copyFileVerified(src, destParent, destName);
-      await srcParent.removeEntry(srcName);
+      try {
+        await srcParent.removeEntry(srcName);
+      } catch (removeErr) {
+        throw new TransferSafetyError(
+          `复制已完成，但移除原文件失败：${errorMessage(removeErr)}；目标副本保留，不能据此判断哪一边完整。`,
+          true,
+        );
+      }
       return {
         ...copied,
         mode: "copy",
@@ -278,24 +537,46 @@ async function transferFile(
       };
     }
     if (moved) {
-      const handle = await destParent.getFileHandle(destName);
-      const actual = await hashFile(handle);
+      let actual: FileChecksum;
+      try {
+        const handle = await destParent.getFileHandle(destName);
+        actual = await hashFile(handle);
+      } catch (err) {
+        throw new TransferSafetyError(
+          `移动已完成但无法校验目标副本：${errorMessage(err)}；目标副本保留，原位置不再作为完整副本依赖。`,
+          true,
+        );
+      }
       if (actual.checksum !== expected.checksum) {
-        // 校验不过就把内容移回原位置，绝不留下「原处没了、副本又坏」的状态
+        let movedBack = false;
+        let backError: unknown;
         try {
+          const handle = await destParent.getFileHandle(destName);
           await handle.move(srcParent, srcName);
-          throw new Error("移动后校验不一致，已移回原位置");
-        } catch (backErr) {
-          throw new Error(
-            `移动后校验不一致且移回失败：${errorMessage(backErr)}；内容保留在目标位置 ${destName}`,
-          );
+          movedBack = true;
+        } catch (err) {
+          backError = err;
         }
+        if (movedBack) {
+          throw new TransferSafetyError("移动后校验不一致，已移回原位置。", false);
+        }
+        throw new TransferSafetyError(
+          `移动后校验不一致且移回失败：${errorMessage(backError)}；内容保留在目标位置 ${destName}，不再自动删除。`,
+          true,
+        );
       }
       return { ...actual, mode: "move" };
     }
   }
   const copied = await copyFileVerified(src, destParent, destName);
-  await srcParent.removeEntry(srcName);
+  try {
+    await srcParent.removeEntry(srcName);
+  } catch (err) {
+    throw new TransferSafetyError(
+      `复制已完成，但移除原文件失败：${errorMessage(err)}；目标副本保留，不能据此判断哪一边完整。`,
+      true,
+    );
+  }
   return { ...copied, mode: "copy", note: "当前浏览器不支持文件移动，已使用复制校验后移除原文件" };
 }
 
@@ -321,8 +602,11 @@ async function copyThenRemoveDirectory(
     // 目录句柄没有 move()，只能复制成功后再删原处（已实测约束）
     await srcParent.removeEntry(srcName, { recursive: true });
   } catch (err) {
-    await destParent.removeEntry(destName, { recursive: true }).catch(() => undefined);
-    throw new Error(`删除原目录失败（已回滚副本）: ${errorMessage(err)}`, { cause: err });
+    // 递归删除可能已经删了一部分：此时目标副本可能是唯一完整版本，绝不回滚删除它
+    throw new TransferSafetyError(
+      `复制已完成，但移除原目录失败：${errorMessage(err)}；目标副本保留，需要恢复检查。`,
+      true,
+    );
   }
   return { checksum: expected, bytes };
 }
@@ -375,6 +659,7 @@ async function quarantineOne(
   ttlDays: number,
   id: string,
 ): Promise<QuarantineRecord> {
+  await verifyEntrySnapshot(root, entry);
   const parts = entry.path.split("/").filter((s) => s.length > 0);
   if (parts.length === 0) throw new Error("不能隔离根目录");
   const name = parts[parts.length - 1];
@@ -425,11 +710,20 @@ export async function quarantineEntries(
   onSkip?: (skip: QuarantineFailure) => void,
   onProgress?: (done: number, total: number) => void,
 ): Promise<QuarantineOutcome> {
-  const qDir = await ensureQuarantineDir(root);
-  const manifest = await readManifest(qDir);
   const created: QuarantineRecord[] = [];
   const skipped: QuarantineFailure[] = [];
   const failures: QuarantineFailure[] = [];
+  const needsReconcile: QuarantineFailure[] = [];
+  if (entries.length === 0) return { created, skipped, failures, needsReconcile };
+
+  // 核心层门禁：不信任 selectedIds、按钮状态或调用方过滤结果
+  for (const entry of entries) {
+    const gate = canQuarantineEntry(entry);
+    if (!gate.allowed) throw new Error(`「${entry.name}」无法进入隔离流程：${gate.reason}`);
+  }
+
+  const qDir = await ensureQuarantineDir(root);
+  const manifest = await readManifest(root, qDir);
   const selected = new Set(entries.map((e) => e.path));
 
   const targets = entries.filter((entry) => {
@@ -449,11 +743,24 @@ export async function quarantineEntries(
     return true;
   });
 
+  // 任何搬动之前先复核全部快照；有一条变化就整批停止，避免后半批基于旧扫描继续执行
+  for (const entry of targets) await verifyEntrySnapshot(root, entry);
+
   // 空间预检必须在任何搬动之前：不足时直接禁止开始
   await checkQuarantineSpace(root, targets.reduce((sum, e) => sum + e.size, 0));
 
   let done = 0;
-  for (const entry of targets) {
+  let stoppedByMismatch: QuarantineFailure | null = null;
+  for (let index = 0; index < targets.length; index += 1) {
+    const entry = targets[index];
+    if (stoppedByMismatch) {
+      const skip = { path: entry.path, reason: `因前序条目扫描快照变化，已停止后续隔离：${stoppedByMismatch.reason}` };
+      skipped.push(skip);
+      onSkip?.(skip);
+      done += 1;
+      onProgress?.(done, targets.length);
+      continue;
+    }
     const id = makeId();
     const now = Date.now();
     // 先落「处理中」清单行：中途崩溃也能看到这条操作曾经开始过
@@ -481,29 +788,40 @@ export async function quarantineEntries(
       Object.assign(record, finished);
       created.push(record);
     } catch (err) {
-      record.status = "quarantine_failed";
       record.note = errorMessage(err);
       record.updatedAt = Date.now();
-      failures.push({ path: entry.path, reason: record.note });
-      // 隔离失败时原文件必须仍在原位置：若副本已产生则清掉，避免留半成品
-      await qDir.removeEntry(quarantineName(record.id, entry.path), { recursive: true }).catch(() => undefined);
+      if (err instanceof SnapshotMismatchError) {
+        record.status = "quarantine_failed";
+        failures.push({ path: entry.path, reason: record.note });
+        stoppedByMismatch = { path: entry.path, reason: record.note };
+        await qDir.removeEntry(quarantineName(record.id, entry.path), { recursive: true }).catch(() => undefined);
+      } else if (err instanceof TransferSafetyError && err.keepDestination) {
+        record.status = "needs_reconcile";
+        record.restored = false;
+        needsReconcile.push({ path: entry.path, reason: record.note });
+        // 目标副本可能是唯一完整版本，绝不自动删除任何一边
+      } else {
+        record.status = "quarantine_failed";
+        failures.push({ path: entry.path, reason: record.note });
+        await qDir.removeEntry(quarantineName(record.id, entry.path), { recursive: true }).catch(() => undefined);
+      }
     }
     await writeManifest(qDir, manifest);
     done += 1;
     onProgress?.(done, targets.length);
   }
 
-  return { created, skipped, failures };
+  return { created, skipped, failures, needsReconcile };
 }
 
 export async function listQuarantine(root: FileSystemDirectoryHandle): Promise<QuarantineRecord[]> {
   const qDir = await ensureQuarantineDir(root);
-  return readManifest(qDir);
+  return readManifest(root, qDir);
 }
 
 // ---------- 还原 ----------
 
-/** 还原前探测同名冲突：返回原位置已存在内容的记录 */
+/** 还原前探测同名冲突：无法确认时失败关闭，绝不把探测错误当成“没有冲突” */
 export async function restoreConflicts(
   root: FileSystemDirectoryHandle,
   records: QuarantineRecord[],
@@ -511,14 +829,9 @@ export async function restoreConflicts(
   const conflicts: QuarantineRecord[] = [];
   for (const record of records) {
     if (record.restored) continue;
-    const parts = record.originalPath.split("/").filter((s) => s.length > 0);
-    if (parts.length === 0) continue;
-    try {
-      const parent = await ensureDirectoryPath(root, parts.slice(0, -1).join("/"));
-      if (await entryExists(parent, parts[parts.length - 1])) conflicts.push(record);
-    } catch {
-      // 探测失败不算冲突，交给还原流程报真实错误
-    }
+    const state = await pathState(root, record.originalPath);
+    if (state === "present") conflicts.push(record);
+    else if (state === "unknown") throw new Error(`无法确认「${record.originalPath}」是否已被占用，已停止还原。`);
   }
   return conflicts;
 }
@@ -534,25 +847,59 @@ async function uniqueRestoreName(parent: FileSystemDirectoryHandle, name: string
   throw new Error("无法为「保留两份」找到不重名的文件名");
 }
 
+async function verifyQuarantineCopy(qDir: FileSystemDirectoryHandle, record: QuarantineRecord): Promise<FileSystemHandle> {
+  let src: FileSystemHandle;
+  try {
+    src = await resolveHandle(qDir, relativeToQuarantine(record));
+  } catch (err) {
+    throw new Error(`隔离副本不可访问，已停止还原：${errorMessage(err)}`);
+  }
+  if (src.kind !== record.kind) throw new Error("隔离副本类型与清单记录不一致，已停止还原。");
+  if (!record.checksum || record.checksumAlgo === "none") return src;
+  const actual = src.kind === "file"
+    ? await hashFile(src as FileSystemFileHandle)
+    : { checksum: await treeChecksum(src as FileSystemDirectoryHandle), algo: "tree-sha256" as const };
+  if (actual.checksum !== record.checksum || actual.algo !== record.checksumAlgo) {
+    throw new Error("隔离副本与清单记录的校验值不一致，已停止还原，不移动任何一边。");
+  }
+  return src;
+}
+
 export async function restoreEntries(
   root: FileSystemDirectoryHandle,
   records: QuarantineRecord[],
   policy: RestorePolicy = "skip",
   onProgress?: (done: number, total: number) => void,
 ): Promise<RestoreOutcome> {
+  if (policy !== "skip" && policy !== "keep-both") {
+    throw new Error(`不支持的还原策略「${String(policy)}」；替换需先备份并支持失败回滚，当前仅允许跳过或保留两份。`);
+  }
   const qDir = await ensureQuarantineDir(root);
-  const manifest = await readManifest(qDir);
+  const manifest = await readManifest(root, qDir);
   const restored: QuarantineRecord[] = [];
   const failures: QuarantineFailure[] = [];
+  const needsReconcile: QuarantineFailure[] = [];
   let done = 0;
 
-  for (const record of records) {
-    const stored = manifest.find((r) => r.id === record.id);
+  // 先整体检查，任何一条需要恢复检查或正在处理，都不得开始批量还原
+  const prepared = records.map((record) => manifest.find((item) => item.id === record.id) ?? null);
+  for (const stored of prepared) {
+    if (!stored || stored.restored) continue;
+    if (stored.status === "needs_reconcile" || stored.status === "processing") {
+      throw new Error(`「${stored.originalPath}」需要恢复检查，已停止还原；请先人工核对原位置与隔离副本。`);
+    }
+  }
+
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    const stored = prepared[index];
     if (!stored || stored.restored) { done += 1; onProgress?.(done, records.length); continue; }
-    stored.status = "processing";
-    stored.updatedAt = Date.now();
-    await writeManifest(qDir, manifest);
     try {
+      await verifyQuarantineCopy(qDir, stored);
+      stored.status = "processing";
+      stored.updatedAt = Date.now();
+      await writeManifest(qDir, manifest);
+
       const qName = relativeToQuarantine(stored);
       const src = await resolveHandle(qDir, qName);
       const parts = stored.originalPath.split("/").filter((s) => s.length > 0);
@@ -571,24 +918,19 @@ export async function restoreEntries(
           onProgress?.(done, records.length);
           continue;
         }
-        if (policy === "keep-both") {
-          name = await uniqueRestoreName(parent, name);
-          notes.push(`原位置已有同名内容，按「保留两份」还原为 ${name}`);
-        } else {
-          await parent.removeEntry(name, { recursive: true });
-          notes.push("按「替换」移除了原位置的同名内容");
-        }
+        name = await uniqueRestoreName(parent, name);
+        notes.push(`原位置已有同名内容，按「保留两份」还原为 ${name}`);
       }
       if (src.kind === "file") {
         const result = await transferFile(src as FileSystemFileHandle, qDir, qName, parent, name);
-        if (stored.checksum && result.checksum !== stored.checksum) {
-          throw new Error("还原后校验值与隔离时记录不一致");
+        if (stored.checksum && (result.checksum !== stored.checksum || result.algo !== stored.checksumAlgo)) {
+          throw new IntegrityMismatchError("还原后校验值与隔离时记录不一致，原位置副本已保留，需要恢复检查。");
         }
         if (result.note) notes.push(result.note);
       } else {
         const result = await copyThenRemoveDirectory(src as FileSystemDirectoryHandle, qDir, qName, parent, name);
         if (stored.checksum && result.checksum !== stored.checksum) {
-          throw new Error("还原后目录结构校验与隔离时记录不一致");
+          throw new IntegrityMismatchError("还原后目录结构校验与隔离时记录不一致，原位置副本已保留，需要恢复检查。");
         }
       }
       stored.status = "restored";
@@ -598,22 +940,30 @@ export async function restoreEntries(
       await writeManifest(qDir, manifest);
       restored.push(stored);
     } catch (err) {
-      stored.status = "restore_failed";
-      stored.note = errorMessage(err);
+      const reason = errorMessage(err);
       stored.updatedAt = Date.now();
+      if ((err instanceof TransferSafetyError && err.keepDestination) || err instanceof IntegrityMismatchError) {
+        stored.status = "needs_reconcile";
+        stored.restored = false;
+        stored.note = reason;
+        needsReconcile.push({ path: stored.originalPath, reason });
+      } else {
+        stored.status = "restore_failed";
+        stored.note = reason;
+        failures.push({ path: stored.originalPath, reason });
+      }
       await writeManifest(qDir, manifest);
-      failures.push({ path: record.originalPath, reason: stored.note });
     }
     done += 1;
     onProgress?.(done, records.length);
   }
 
-  return { restored, failures };
+  return { restored, failures, needsReconcile };
 }
 
 export async function purgeExpired(root: FileSystemDirectoryHandle, records: QuarantineRecord[]): Promise<QuarantineRecord[]> {
   const qDir = await ensureQuarantineDir(root);
-  const manifest = await readManifest(qDir);
+  const manifest = await readManifest(root, qDir);
   const candidates = new Set(records.map((r) => r.id));
   const now = Date.now();
   const keep: QuarantineRecord[] = [];
@@ -621,7 +971,8 @@ export async function purgeExpired(root: FileSystemDirectoryHandle, records: Qua
   let changed = false;
 
   for (const record of manifest) {
-    if (!record.restored && record.expiresAt <= now && candidates.has(record.id)) {
+    // 只清理状态明确并且仍完整的隔离项；处理中、失败或待对账的一律留给人工
+    if (record.status === "quarantined" && record.expiresAt <= now && candidates.has(record.id)) {
       try {
         await qDir.removeEntry(relativeToQuarantine(record), { recursive: true });
       } catch (err) {
@@ -644,25 +995,45 @@ export async function purgeExpired(root: FileSystemDirectoryHandle, records: Qua
   return keep;
 }
 
-export async function deleteQuarantined(root: FileSystemDirectoryHandle, record: QuarantineRecord): Promise<void> {
+export type DeleteQuarantineResult = "content" | "audit" | "missing";
+
+export async function deleteQuarantined(
+  root: FileSystemDirectoryHandle,
+  record: QuarantineRecord,
+): Promise<DeleteQuarantineResult> {
   const qDir = await ensureQuarantineDir(root);
-  const manifest = await readManifest(qDir);
+  const manifest = await readManifest(root, qDir);
   const stored = manifest.find((r) => r.id === record.id);
-  if (!stored) return;
+  if (!stored) return "missing";
+  if (stored.status === "needs_reconcile" || stored.status === "processing") {
+    throw new Error("该记录需要恢复检查，不能直接彻底删除；请先人工核对原位置与隔离副本。");
+  }
+  if (stored.restored) {
+    // 已还原记录没有隔离副本：这里只移除历史行，不触碰原文件和审计 Markdown
+    await writeManifest(qDir, manifest.filter((r) => r.id !== stored.id));
+    return "audit";
+  }
   await qDir.removeEntry(relativeToQuarantine(stored), { recursive: true }).catch((err) => {
     if (!isNotFoundError(err)) throw new Error(`删除隔离内容失败: ${errorMessage(err)}`, { cause: err });
   });
   // 彻底删除后必须同时移除清单行，否则会留下一条内容已不存在的幽灵记录
   await writeManifest(qDir, manifest.filter((r) => r.id !== stored.id));
+  return "content";
 }
 
 export async function emptyQuarantine(root: FileSystemDirectoryHandle): Promise<void> {
   const qDir = await ensureQuarantineDir(root);
+  const manifest = await readManifest(root, qDir);
+  const uncertain = manifest.filter((record) =>
+    record.status === "needs_reconcile" || record.status === "processing");
+  if (uncertain.length > 0) {
+    throw new Error(`存在 ${uncertain.length} 条需要恢复检查的记录，已阻止清空；请先人工核对，避免删除唯一副本。`);
+  }
   const names: string[] = [];
   for await (const name of qDir.keys()) names.push(name);
   for (const name of names) {
-    // 运维手册与文件夹名录是审计历史，清空隔离区时必须保留
-    if (JOURNAL_NAMES.includes(name)) continue;
+    // 操作记录、恢复说明和损坏清单备份是审计痕迹，清空隔离区时必须保留
+    if (isReservedQuarantineName(name) && name !== MANIFEST_NAME) continue;
     try {
       await qDir.removeEntry(name, { recursive: true });
     } catch (err) {

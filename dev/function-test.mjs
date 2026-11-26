@@ -4,6 +4,7 @@
 import { application } from '../functions/routes.mjs';
 import { createCoordinator } from '../functions/coordinator.mjs';
 import { normalizeJudgment } from '../functions/ai.mjs';
+import { buildDiagnosePrompt, redactDiagnosisText } from '../functions/prompts.mjs';
 
 class BackendError extends Error {
   constructor(code, status) { super(code); this.name = 'BackendError'; this.code = code; this.status = status; }
@@ -69,6 +70,12 @@ const errorResponse = (error, requestId) => Response.json(
 const createSiteContext = (request) => ({ request, requestId: crypto.randomUUID() });
 
 let aiCalls = 0;
+let lastDiagnoseInput = null;
+let diagnoseAnswer = {
+  findings: [{ mechanism: 'shell_namespace', subject: 'TestApp', detail: '注册表虚拟文件夹', evidenceIds: [], confidence: 0.7 }],
+  officialUninstallerEvidenceId: null,
+  advice: '先卸载再清理残留',
+};
 const fakeAi = {
   async classify(items) {
     aiCalls += 1;
@@ -79,12 +86,13 @@ const fakeAi = {
       revival: [], evidence: ['子目录含 CacheStorage'],
     }));
   },
-  async diagnose() {
+  async diagnose(input) {
     aiCalls += 1;
-    return {
-      findings: [{ mechanism: 'shell_namespace', subject: 'TestApp', detail: '注册表虚拟文件夹', confidence: 0.7 }],
-      officialUninstaller: '设置 → 应用 → TestApp → 卸载', advice: '先卸载再清理残留', generatedAt: Date.now(),
-    };
+    lastDiagnoseInput = input;
+    return structuredClone(diagnoseAnswer);
+  },
+  metadata() {
+    return { provider: 'fixture-cloud-agents', model: 'fixture-model', selection: 'fixed' };
   },
 };
 
@@ -204,10 +212,88 @@ const call = makeApp(db);
   const body = await res.json();
   check('diagnose 200', res.status === 200 && body.aiStatus === 'ok', body);
   check('diagnose finding mechanism', body.report?.findings?.[0]?.mechanism === 'shell_namespace', body);
+  check('diagnose reports provider/model metadata', body.aiMetadata?.provider === 'fixture-cloud-agents'
+    && body.aiMetadata?.model === 'fixture-model' && body.aiMetadata?.selection === 'fixed', body.aiMetadata);
 }
 {
   const res = await call('POST', '/api/diagnose', { subject: '', symptoms: 'x' });
   check('diagnose empty subject 400', res.status === 400);
+}
+{
+  const res = await call('POST', '/api/diagnose', { subject: 'TestApp', symptoms: 'x', scriptOutput: '{"secret":"raw"}' });
+  check('raw scriptOutput rejected', res.status === 400);
+}
+{
+  const evidence = [{ id: 'ev_testcollection_service_001', kind: 'service', subject: 'TestApp' }];
+  const res = await call('POST', '/api/diagnose', { subject: 'TestApp', symptoms: 'x', evidence });
+  const body = await res.json();
+  check('minimal evidence accepted', res.status === 200 && body.aiStatus === 'ok', body);
+  check('backend receives no raw scriptOutput', lastDiagnoseInput && !('scriptOutput' in lastDiagnoseInput), lastDiagnoseInput);
+  check('backend receives only evidence manifest', JSON.stringify(lastDiagnoseInput?.evidence) === JSON.stringify(evidence), lastDiagnoseInput);
+}
+{
+  const evidence = [{ id: 'ev_testcollection_service_001', kind: 'service', subject: 'TestApp' }];
+  diagnoseAnswer = {
+    findings: [{ mechanism: 'autostart_service', subject: 'Ghost', detail: '伪造', evidenceIds: ['ev_testcollection_service_999'], confidence: 0.99 }],
+    officialUninstallerEvidenceId: null,
+    advice: '',
+  };
+  const res = await call('POST', '/api/diagnose', { subject: 'TestApp', symptoms: 'x', evidence });
+  const body = await res.json();
+  check('forged evidence id fails closed', res.status === 200 && body.aiStatus === 'unavailable' && body.report === null, body);
+}
+{
+  const evidence = [{ id: 'ev_testcollection_service_001', kind: 'service', subject: 'TestApp' }];
+  diagnoseAnswer = {
+    findings: [{
+      mechanism: 'autostart_service', subject: 'TestApp', detail: '本地服务', evidenceIds: [evidence[0].id], confidence: 0.9,
+      serviceName: 'GhostService', registryPath: 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run', taskName: 'GhostTask',
+    }],
+    officialUninstallerEvidenceId: null,
+    advice: '',
+  };
+  const res = await call('POST', '/api/diagnose', { subject: 'TestApp', symptoms: 'x', evidence });
+  const body = await res.json();
+  const finding = body.report?.findings?.[0];
+  check('AI executable target fields stripped', res.status === 200 && finding
+    && !('serviceName' in finding) && !('registryPath' in finding) && !('taskName' in finding), body);
+}
+{
+  const evidence = [{ id: 'ev_testcollection_service_001', kind: 'service', subject: 'TestApp' }];
+  diagnoseAnswer = {
+    findings: [], officialUninstallerEvidenceId: evidence[0].id, advice: '',
+  };
+  const res = await call('POST', '/api/diagnose', { subject: 'TestApp', symptoms: 'x', evidence });
+  const body = await res.json();
+  check('non-uninstaller evidence cannot be official uninstaller', body.aiStatus === 'unavailable' && body.report === null, body);
+}
+{
+  const evidence = [{ id: 'ev_testcollection_uninstaller_001', kind: 'uninstaller', subject: 'TestApp' }];
+  diagnoseAnswer = {
+    findings: [], officialUninstallerEvidenceId: evidence[0].id, advice: '',
+  };
+  const res = await call('POST', '/api/diagnose', { subject: 'TestApp', symptoms: 'x', evidence });
+  const body = await res.json();
+  check('local uninstaller evidence reference accepted', body.aiStatus === 'ok' && body.report?.officialUninstallerEvidenceId === evidence[0].id, body);
+  diagnoseAnswer = {
+    findings: [{ mechanism: 'shell_namespace', subject: 'TestApp', detail: '注册表虚拟文件夹', evidenceIds: [], confidence: 0.7 }],
+    officialUninstallerEvidenceId: null,
+    advice: '先卸载再清理残留',
+  };
+}
+
+{
+  const sensitive = "C:\\Users\\alice\\AppData\\Local\\TestApp alice@example.com api_key=supersecret AA:BB:CC:DD:EE:FF ABCDE-ABCDE-ABCDE-ABCDE-ABCDE";
+  const redacted = redactDiagnosisText(sensitive);
+  check('server redacts diagnosis text', !redacted.includes('alice') && !redacted.includes('supersecret')
+    && !redacted.includes('AA:BB:CC') && !redacted.includes('ABCDE-ABCDE') && !redacted.includes('C:\\Users'), redacted);
+  const prompt = buildDiagnosePrompt({
+    subject: sensitive,
+    symptoms: sensitive,
+    evidence: [{ id: 'ev_testcollection_service_001', kind: 'service', subject: sensitive }],
+  });
+  check('diagnosis prompt contains no raw sensitive fields', !prompt.includes('alice') && !prompt.includes('supersecret')
+    && !prompt.includes('AA:BB:CC') && !prompt.includes('ABCDE-ABCDE'), prompt);
 }
 
 // --- anonymous abuse control ---

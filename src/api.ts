@@ -1,4 +1,5 @@
-import type { DiagnosisReport, OwnerKind, RevivalMechanism, ScanEntry, Verdict } from "./core/types";
+import type { AiDiagnosisReport, AiModelMetadata, DiagnosisEvidence, OwnerKind, RevivalMechanism, ScanEntry, Verdict } from "./core/types";
+import { buildCloudDiagnosisPayload } from "./diagnose/redact";
 
 const BASE = "/functions/v1/app";
 const TIMEOUT_MS = 45_000;
@@ -43,18 +44,29 @@ export interface JudgeResponse {
 }
 
 export interface DiagnoseResponse {
-  report: DiagnosisReport | null;
+  report: AiDiagnosisReport | null;
   aiStatus: AiStatus;
+  metadata: AiModelMetadata | null;
 }
+
+export const DIAGNOSE_AI_STATUS_TEXT: Record<AiStatus, string> = {
+  ok: "云端辅助分析完成",
+  quota_exhausted: "云端辅助分析不可用，以下为本地证据解析结果",
+  rate_limited: "云端辅助分析不可用，以下为本地证据解析结果",
+  initializing: "云端辅助分析不可用，以下为本地证据解析结果",
+  not_configured: "云端辅助分析不可用，以下为本地证据解析结果",
+  timeout: "云端辅助分析不可用，以下为本地证据解析结果",
+  unavailable: "云端辅助分析不可用，以下为本地证据解析结果",
+};
 
 export const AI_STATUS_TEXT: Record<AiStatus, string> = {
   ok: "云端 AI 判定完成",
   quota_exhausted: "今日共享 AI 额度已用尽，本地知识库判定仍然可用",
   rate_limited: "请求过于频繁，请稍后再试；本地知识库判定仍然可用",
   initializing: "云端 AI 正在首次初始化，稍后重试即可",
-  not_configured: "云端 AI 尚未启用，当前使用本地知识库判定",
-  timeout: "云端 AI 响应超时，已回退本地规则，这些目录保持「需要确认」",
-  unavailable: "云端 AI 暂时不可用，已回退本地规则，这些目录保持「需要确认」",
+  not_configured: "云端模型未配置，当前仅使用本地规则",
+  timeout: "请求超时，已回退本地规则，未识别目录保持「需要确认」",
+  unavailable: "服务返回错误，已回退本地规则，未识别目录保持「需要确认」",
 };
 
 export class ApiError extends Error {
@@ -76,12 +88,15 @@ const PUBLIC_TEXT: Record<string, string> = {
   invalid_user_context: "登录状态无效，请刷新页面",
   database_not_configured: "站点数据库尚未配置",
   database_credential_rejected: "站点数据库凭据被拒绝",
+  service_unavailable: "服务返回错误，请稍后重试",
+  invalid_response: "服务返回错误：响应格式不符合要求",
 };
 
 export function apiErrorText(error: unknown): string {
-  if (error instanceof ApiError) return PUBLIC_TEXT[error.code] ?? "服务暂时不可用，请稍后重试";
+  if (error instanceof ApiError) return PUBLIC_TEXT[error.code] ?? "服务返回错误，请稍后重试";
   if (error instanceof DOMException && error.name === "AbortError") return "请求超时，请稍后重试";
-  return "网络异常，无法连接云端服务";
+  if (error instanceof TypeError) return "网络失败，无法连接云端服务";
+  return "网络失败或请求中断，无法连接云端服务";
 }
 
 async function post<T>(path: string, body: unknown, validate: (value: unknown) => T | null): Promise<T> {
@@ -170,6 +185,19 @@ function parseStatus(value: unknown): AiStatus {
   return typeof value === "string" && AI_STATUSES.has(value) ? (value as AiStatus) : "unavailable";
 }
 
+function parseAiMetadata(value: unknown): AiModelMetadata | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.provider !== "string" || !raw.provider) return null;
+  if (raw.model !== null && typeof raw.model !== "string") return null;
+  if (raw.selection !== "fixed" && raw.selection !== "dynamic") return null;
+  return {
+    provider: raw.provider,
+    model: raw.model,
+    selection: raw.selection,
+  };
+}
+
 export async function judgeDirectories(items: JudgeItem[]): Promise<JudgeResponse> {
   return post("/api/judge", { items }, (payload) => {
     if (!payload || typeof payload !== "object") return null;
@@ -188,7 +216,9 @@ export async function judgeDirectories(items: JudgeItem[]): Promise<JudgeRespons
   });
 }
 
-function parseFinding(value: unknown): DiagnosisReport["findings"][number] | null {
+const EVIDENCE_ID_RE = /^ev_[A-Za-z0-9_-]{8,90}$/;
+
+function parseFinding(value: unknown): AiDiagnosisReport["findings"][number] | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
   if (typeof raw.mechanism !== "string" || !MECHANISMS.has(raw.mechanism)) return null;
@@ -196,54 +226,53 @@ function parseFinding(value: unknown): DiagnosisReport["findings"][number] | nul
   const detail = text(raw.detail, 400);
   if (!subject || detail === null) return null;
   if (typeof raw.confidence !== "number" || !Number.isFinite(raw.confidence)) return null;
-  const optional = (field: string, max: number) => {
-    const parsed = text(raw[field], max);
-    return parsed && parsed.trim() ? { [field]: parsed } : {};
-  };
+  const evidenceIds = strings(raw.evidenceIds, 8, 100);
+  if (!evidenceIds || evidenceIds.some((id) => !EVIDENCE_ID_RE.test(id))) return null;
   return {
     mechanism: raw.mechanism as RevivalMechanism,
     subject,
     detail,
-    ...optional("registryPath", 300),
-    ...optional("serviceName", 120),
-    ...optional("taskName", 200),
-    ...optional("clsid", 80),
-    ...optional("uninstallString", 400),
     confidence: Math.min(1, Math.max(0, raw.confidence)),
+    source: "ai",
+    evidenceIds,
   };
 }
 
 export async function requestDiagnosis(input: {
   subject: string;
   symptoms: string;
-  scriptOutput?: string | null;
+  evidence: DiagnosisEvidence[];
 }): Promise<DiagnoseResponse> {
-  return post("/api/diagnose", input, (payload) => {
-    if (!payload || typeof payload !== "object") return null;
-    const raw = payload as Record<string, unknown>;
+  const payload = buildCloudDiagnosisPayload(input);
+  return post("/api/diagnose", payload, (value) => {
+    if (!value || typeof value !== "object") return null;
+    const raw = value as Record<string, unknown>;
     const aiStatus = parseStatus(raw.aiStatus);
-    if (raw.report === null || raw.report === undefined) return { report: null, aiStatus };
+    const metadata = parseAiMetadata(raw.aiMetadata);
+    if (raw.report === null || raw.report === undefined) return { report: null, aiStatus, metadata };
     if (typeof raw.report !== "object") return null;
     const report = raw.report as Record<string, unknown>;
     if (!Array.isArray(report.findings) || report.findings.length > 12) return null;
-    const findings: DiagnosisReport["findings"] = [];
+    const findings: AiDiagnosisReport["findings"] = [];
     for (const entry of report.findings) {
       const parsed = parseFinding(entry);
       if (!parsed) return null;
       findings.push(parsed);
     }
-    const officialUninstaller = text(report.officialUninstaller, 400);
+    const uninstallerId = report.officialUninstallerEvidenceId;
+    if (uninstallerId !== null && (typeof uninstallerId !== "string" || !EVIDENCE_ID_RE.test(uninstallerId))) return null;
     const advice = text(report.advice, 400);
-    if (officialUninstaller === null || advice === null) return null;
+    if (advice === null) return null;
     return {
       report: {
         findings,
-        officialUninstaller: officialUninstaller.trim() ? officialUninstaller : null,
+        officialUninstallerEvidenceId: uninstallerId,
+        advice,
         generatedAt: typeof report.generatedAt === "number" ? report.generatedAt : Date.now(),
-        raw: "",
-        ...(advice.trim() ? { advice } : {}),
+        ...(metadata ? { aiMetadata: metadata } : {}),
       },
       aiStatus,
+      metadata,
     };
   });
 }

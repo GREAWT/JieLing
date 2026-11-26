@@ -2,6 +2,15 @@ export type EntryKind = "file" | "directory";
 
 export type ScanSource = "sandbox" | "local";
 
+/** 目录子树的扫描覆盖状态；complete 与其他状态互斥 */
+export type ScanCoverage =
+  | "complete"
+  | "depth_limited"
+  | "entry_limited"
+  | "skipped_children"
+  | "permission_partial"
+  | "cancelled";
+
 export type Verdict = "safe_delete" | "needs_review" | "keep_locked";
 
 export type OwnerKind = "app" | "system" | "dev_tool" | "cache" | "unknown";
@@ -27,6 +36,8 @@ export interface ScanEntry {
   isEmptyDir: boolean;
   parentId: string | null;
   childIds: string[];
+  /** 文件为 complete；目录仅在整棵子树都扫完时才是 complete */
+  coverage: ScanCoverage[];
 }
 
 export interface KnowledgeHit {
@@ -41,6 +52,8 @@ export interface KnowledgeHit {
   consequence: string;
   revival: RevivalMechanism[];
   evidence: string[];
+  /** 缺省视为经过审查的本地指纹；ai/cache 不能产生 safe_delete */
+  source?: "fingerprint" | "ai" | "cache";
 }
 
 export interface JudgedEntry extends ScanEntry {
@@ -49,7 +62,8 @@ export interface JudgedEntry extends ScanEntry {
   riskScore: number;
   priority: number;
   locked: boolean;
-  source: "fingerprint" | "ai" | "heuristic";
+  lockReason?: string;
+  source: "fingerprint" | "ai" | "cache" | "heuristic";
 }
 
 export interface OwnerGroup {
@@ -74,10 +88,11 @@ export type QuarantineStatus =
   | "quarantined"
   | "quarantine_failed"
   | "restored"
-  | "restore_failed";
+  | "restore_failed"
+  | "needs_reconcile";
 
-/** 还原遇到同名内容时的处理策略 */
-export type RestorePolicy = "skip" | "keep-both" | "replace";
+/** 还原遇到同名内容时的处理策略；替换需先备份与失败回滚，暂不提供 */
+export type RestorePolicy = "skip" | "keep-both";
 
 export interface QuarantineRecord {
   id: string;
@@ -111,11 +126,13 @@ export interface QuarantineOutcome {
   created: QuarantineRecord[];
   skipped: QuarantineFailure[];
   failures: QuarantineFailure[];
+  needsReconcile: QuarantineFailure[];
 }
 
 export interface RestoreOutcome {
   restored: QuarantineRecord[];
   failures: QuarantineFailure[];
+  needsReconcile: QuarantineFailure[];
 }
 
 export type ScanPhase = "idle" | "scanning" | "judging" | "ready" | "error";
@@ -128,6 +145,8 @@ export interface ScanProgress {
   truncated: boolean;
   /** 用户主动停止：结果是部分的，但不是出错 */
   stopped?: boolean;
+  /** 各覆盖原因的目录数量，用于向用户说明扫描到了哪里 */
+  coverage?: Partial<Record<ScanCoverage, number>> & { incompleteDirs?: number };
 }
 
 export interface ScanOptions {
@@ -161,14 +180,82 @@ export interface ResurrectionFinding {
   clsid?: string;
   uninstallString?: string;
   confidence: number;
+  source?: "local" | "ai";
+  evidenceIds?: string[];
+}
+
+export type DiagnosisEvidenceKind =
+  | "service"
+  | "task"
+  | "run_key"
+  | "shell_namespace"
+  | "process"
+  | "uninstaller"
+  | "startup_folder"
+  | "target";
+
+export interface DiagnosisEvidence {
+  id: string;
+  kind: DiagnosisEvidenceKind;
+  subject: string;
+  detail: string;
+  serviceName?: string;
+  taskPath?: string;
+  taskName?: string;
+  registryPath?: string;
+  clsid?: string;
+  processName?: string;
+  uninstallString?: string;
+  displayName?: string;
+  publisher?: string;
+  path?: string;
+  driver?: boolean;
+  lockSuspected?: boolean;
+}
+
+export interface AiModelMetadata {
+  provider: string;
+  model: string | null;
+  selection: "fixed" | "dynamic";
+}
+
+export interface AiDiagnosisReport {
+  findings: ResurrectionFinding[];
+  officialUninstallerEvidenceId: string | null;
+  advice: string;
+  generatedAt: number;
+  aiMetadata?: AiModelMetadata;
+}
+
+export type DiagnosisCollectorName =
+  | "services"
+  | "tasks"
+  | "runKeys"
+  | "startupFolders"
+  | "shellNamespaces"
+  | "uninstallers"
+  | "targetStatus"
+  | "processes";
+
+export interface DiagnosisCollectorStatus {
+  ok: boolean;
+  count?: number;
+  error?: string;
 }
 
 export interface DiagnosisReport {
   findings: ResurrectionFinding[];
+  evidence: DiagnosisEvidence[];
+  collectionId: string;
   officialUninstaller: string | null;
   generatedAt: number;
   raw: string;
+  summary?: string;
   advice?: string;
+  aiMetadata?: AiModelMetadata;
+  collectionStatus?: Partial<Record<DiagnosisCollectorName, DiagnosisCollectorStatus>>;
+  aiStatus?: "ok" | "quota_exhausted" | "rate_limited" | "initializing" | "not_configured" | "timeout" | "unavailable";
+  aiNotice?: string;
 }
 
 export interface CleanupAction {
@@ -180,4 +267,6 @@ export interface CleanupAction {
   command: string;
   reversible: boolean;
   selected: boolean;
+  evidenceId?: string;
+  source?: "local_evidence";
 }

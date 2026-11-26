@@ -8,10 +8,12 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { VERDICT_LABEL, VERDICT_ORDER } from "@/src/core/constants";
+import { orderReviewEntries } from "@/src/app/review";
+import { VERDICT_LABEL, rebuildMechanisms } from "@/src/core/constants";
 import type { JudgedEntry, OwnerGroup, Verdict } from "@/src/core/types";
 import { EntryRow } from "./EntryRow";
 import {
+  EntrySemanticBadges,
   OWNER_KIND_LABEL,
   OwnerKindIcon,
   RevivalBadge,
@@ -49,9 +51,7 @@ export function OwnerGroupCard({
 }: OwnerGroupCardProps) {
   const [open, setOpen] = useState(defaultOpen);
   const locked = selectionDisabled || group.selectableCount === 0;
-  const entries = [...group.entries].sort(
-    (a, b) => VERDICT_ORDER[a.verdict] - VERDICT_ORDER[b.verdict] || b.priority - a.priority,
-  );
+  const entries = orderReviewEntries(group.entries);
   const selectable = entries.filter((e) => !e.locked && e.verdict !== "keep_locked");
   const selectedCount = selectable.filter((e) => selectedIds.has(e.id)).length;
   const groupChecked: boolean | "indeterminate" =
@@ -96,9 +96,10 @@ export function OwnerGroupCard({
                   <span className="dc-display max-w-full truncate text-base font-semibold">
                     {group.owner}
                   </span>
-                  {group.revival.length > 0 && (
+                  {rebuildMechanisms(group.revival).length > 0 && (
                     <RevivalBadge mechanisms={group.revival} interactive={false} />
                   )}
+                  <EntrySemanticBadges mechanisms={group.revival} rebuildable={group.entries.some((e) => e.hit?.rebuildable)} />
                   {group.hasAiJudgment && (
                     <span className="dc-tone-ai dc-tone-bg dc-tone-text dc-tone-border inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium">
                       <Sparkles aria-hidden className="size-3" />

@@ -16,6 +16,17 @@ const MAX_ANSWER_CHARS = 64_000;
 
 // A read cache only. Durable creation intent lives in the coordinator's database rows.
 let modelCache = null;
+let modelSelection = 'dynamic';
+const MODEL_ENV = 'DASHCLEAN_MODEL_ID';
+
+function configuredModelId() {
+  try {
+    const value = globalThis.Deno?.env.get(MODEL_ENV);
+    return typeof value === 'string' && /^[A-Za-z0-9._:-]{1,120}$/.test(value.trim()) ? value.trim() : null;
+  } catch {
+    return null;
+  }
+}
 
 const SOURCE_MECHANISMS = new Set(['autostart_service', 'scheduled_task', 'run_key', 'shell_namespace']);
 const VERDICTS = new Set(['safe_delete', 'needs_review', 'keep_locked']);
@@ -30,7 +41,10 @@ function publicError(error, fallback = 'ai_service_unavailable') {
 }
 
 async function selectModel(client) {
-  if (modelCache && Date.now() - modelCache.at < 300_000) return modelCache.id;
+  if (modelCache && Date.now() - modelCache.at < 300_000) {
+    modelSelection = modelCache.selection;
+    return modelCache.id;
+  }
   const page = await client.request('/api/v1/cloud/models', { method: 'GET' });
   const list = Array.isArray(page?.data) ? page.data : Array.isArray(page) ? page : [];
   const enabled = list
@@ -39,22 +53,34 @@ async function selectModel(client) {
     .map((m) => m.id)
     .sort();
   if (!enabled.length) throw new CloudAgentsError('ai_not_configured', 503, 'not_sent');
+  const configured = configuredModelId();
+  if (configured) {
+    if (!enabled.includes(configured)) throw new CloudAgentsError('ai_model_unavailable', 503, 'not_sent');
+    modelSelection = 'fixed';
+    modelCache = { id: configured, at: Date.now(), selection: 'fixed' };
+    return configured;
+  }
   // Deterministic choice keeps the Agent definition fingerprint stable across cold starts.
   const preferred = enabled.find((id) => /claude|qwen3|gpt|gemini/i.test(id));
   const id = preferred ?? enabled[0];
-  modelCache = { id, at: Date.now() };
+  modelSelection = 'dynamic';
+  modelCache = { id, at: Date.now(), selection: 'dynamic' };
   return id;
 }
 
 async function binding(client, coordinator, system, name) {
   const model = await selectModel(client);
-  return ensureCloudResources({
+  const resources = await ensureCloudResources({
     client,
     coordinator,
     applicationScope: APP_SCOPE,
     agent: { name, model, system, tools: [], metadata: { app: 'dareclean', purpose: 'disk-verdict' } },
     environment: { name: `${name} environment`, config: { type: 'cloud' }, metadata: { app: 'dareclean' } },
   });
+  return {
+    resources,
+    metadata: { provider: 'qoder-cloud-agents', model, selection: modelSelection },
+  };
 }
 
 function textOf(event) {
@@ -200,15 +226,66 @@ export function normalizeJudgment(raw, key) {
   };
 }
 
+const EVIDENCE_ID_RE = /^ev_[A-Za-z0-9_-]{8,90}$/;
+const EVIDENCE_KINDS = new Set([
+  'service', 'task', 'run_key', 'shell_namespace', 'process',
+  'uninstaller', 'startup_folder', 'target',
+]);
+
+export function normalizeDiagnosisAnswer(raw, evidence) {
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.findings) || raw.findings.length > 12) {
+    throw new CloudAgentsError('ai_response_invalid', 502, 'rejected');
+  }
+  const evidenceById = new Map(evidence.map((entry) => [entry.id, entry]));
+  const findings = raw.findings.map((finding) => {
+    if (!finding || typeof finding !== 'object' || !isMechanism(finding.mechanism)) {
+      throw new CloudAgentsError('ai_response_invalid', 502, 'rejected');
+    }
+    const ids = finding.evidenceIds === undefined ? [] : finding.evidenceIds;
+    if (!Array.isArray(ids) || ids.length > 8 || ids.some((id) =>
+      typeof id !== 'string' || !EVIDENCE_ID_RE.test(id) || !evidenceById.has(id))) {
+      throw new CloudAgentsError('ai_response_invalid', 502, 'rejected');
+    }
+    let confidence = Number(finding.confidence);
+    if (!Number.isFinite(confidence)) confidence = 0.3;
+    return {
+      mechanism: finding.mechanism,
+      subject: clampString(finding.subject, 120, '未指明对象'),
+      detail: clampString(finding.detail, 400, ''),
+      evidenceIds: [...new Set(ids)],
+      confidence: Math.round(Math.min(1, Math.max(0, confidence)) * 100) / 100,
+    };
+  });
+
+  let officialUninstallerEvidenceId = null;
+  if (raw.officialUninstallerEvidenceId !== undefined && raw.officialUninstallerEvidenceId !== null) {
+    const id = raw.officialUninstallerEvidenceId;
+    const entry = typeof id === 'string' ? evidenceById.get(id) : null;
+    if (typeof id !== 'string' || !EVIDENCE_ID_RE.test(id) || !entry || entry.kind !== 'uninstaller') {
+      throw new CloudAgentsError('ai_response_invalid', 502, 'rejected');
+    }
+    officialUninstallerEvidenceId = id;
+  }
+
+  return {
+    findings,
+    officialUninstallerEvidenceId,
+    advice: clampString(raw.advice, 400, ''),
+    generatedAt: Date.now(),
+  };
+}
+
 export function createAi({ coordinator }) {
   const client = createCloudAgentsClient({ origin: CLOUD_ORIGIN });
+  let lastMetadata = null;
 
   return {
     async classify(items) {
       const bound = await binding(client, coordinator, CLASSIFY_SYSTEM, '洁灵目录判定引擎');
+      lastMetadata = bound.metadata;
       const prompt = buildClassifyPrompt(items);
       const expected = new Map(items.map((item) => [item.key, item]));
-      const answer = await runSession(client, bound, prompt, (parsed) => {
+      const answer = await runSession(client, bound.resources, prompt, (parsed) => {
         if (!Array.isArray(parsed.judgments) || parsed.judgments.length !== items.length) return null;
         const out = [];
         const seen = new Set();
@@ -226,36 +303,18 @@ export function createAi({ coordinator }) {
     },
 
     async diagnose(input) {
-      const bound = await binding(client, coordinator, DIAGNOSE_SYSTEM, '洁灵复活诊断引擎');
+      const bound = await binding(client, coordinator, DIAGNOSE_SYSTEM, '洁灵顽固软件诊断引擎');
+      lastMetadata = bound.metadata;
       const prompt = buildDiagnosePrompt(input);
-      return runSession(client, bound, prompt, (parsed) => {
-        if (!Array.isArray(parsed.findings)) return null;
-        const findings = parsed.findings.slice(0, 12).map((f) => {
-          if (!f || typeof f !== 'object' || !isMechanism(f.mechanism)) return null;
-          let confidence = Number(f.confidence);
-          if (!Number.isFinite(confidence)) confidence = 0.3;
-          const optional = (value, max) => (typeof value === 'string' && value.trim()
-            ? clampString(value, max) : undefined);
-          return {
-            mechanism: f.mechanism,
-            subject: clampString(f.subject, 120, '未指明对象'),
-            detail: clampString(f.detail, 400, ''),
-            ...(optional(f.registryPath, 300) ? { registryPath: optional(f.registryPath, 300) } : {}),
-            ...(optional(f.serviceName, 120) ? { serviceName: optional(f.serviceName, 120) } : {}),
-            ...(optional(f.taskName, 200) ? { taskName: optional(f.taskName, 200) } : {}),
-            ...(optional(f.clsid, 80) ? { clsid: optional(f.clsid, 80) } : {}),
-            ...(optional(f.uninstallString, 400) ? { uninstallString: optional(f.uninstallString, 400) } : {}),
-            confidence: Math.round(Math.min(1, Math.max(0, confidence)) * 100) / 100,
-          };
-        }).filter(Boolean);
-        return {
-          findings,
-          officialUninstaller: typeof parsed.officialUninstaller === 'string' && parsed.officialUninstaller.trim()
-            ? clampString(parsed.officialUninstaller, 400) : null,
-          advice: clampString(parsed.advice, 400, ''),
-          generatedAt: Date.now(),
-        };
-      });
+      return runSession(client, bound.resources, prompt, (parsed) => normalizeDiagnosisAnswer(parsed, input.evidence));
+    },
+
+    metadata() {
+      return lastMetadata ?? {
+        provider: 'qoder-cloud-agents',
+        model: null,
+        selection: configuredModelId() ? 'fixed' : 'dynamic',
+      };
     },
   };
 }

@@ -194,7 +194,7 @@ export function buildCleanupScript(actions: CleanupAction[]): string {
   // UTF-8 BOM：Windows PowerShell 5.1 会把无 BOM 文件按 ANSI 解码，中文注释可能吞掉引号
   return `\uFEFF# 洁灵 · 逐项清理脚本（dareclean-cleanup-v1）
 # 默认 dry-run：只打印将要执行的操作，不做任何修改，无需管理员。
-# 确认输出无误后，以管理员身份运行并加 -Execute 参数才会真正执行（UAC 提权即授权）；
+# 确认输出无误后，再由你主动以管理员身份运行并加 -Execute 参数才会真正执行；
 # 注册表/进程类高危操作在执行前还会要求逐项输入 YES 二次确认。
 # 注册表操作只处理下面列出的单个值/单个键，执行前自动备份到用户目录。
 param([switch]$Execute)

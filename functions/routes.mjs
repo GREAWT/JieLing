@@ -1,6 +1,6 @@
 import { getUser, UserContextError } from './auth.mjs';
 import { createCoordinator } from './coordinator.mjs';
-import { createAi, publicError } from './ai.mjs';
+import { createAi, normalizeDiagnosisAnswer, publicError } from './ai.mjs';
 import { redactAncestors } from './prompts.mjs';
 
 const MAX_BODY = 65_536;
@@ -11,6 +11,11 @@ const USER_WINDOW_CAP = 30;
 const WINDOW_MS = 600_000;
 
 const GUIDISH = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,}/gi;
+const EVIDENCE_ID_RE = /^ev_[A-Za-z0-9_-]{8,90}$/;
+const EVIDENCE_KINDS = new Set([
+  'service', 'task', 'run_key', 'shell_namespace', 'process',
+  'uninstaller', 'startup_folder', 'target',
+]);
 
 async function sha256(value) {
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
@@ -85,6 +90,20 @@ export function application({ db, BackendError, ai: aiOverride }) {
       fileCount: raw.fileCount, dirCount: raw.dirCount,
       sizeBytes: raw.sizeBytes, isEmpty: raw.isEmpty,
     };
+  }
+
+  function validateEvidence(value) {
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.length > 400) fail('invalid_input', 400);
+    const seen = new Set();
+    return value.map((raw) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail('invalid_input', 400);
+      if (!str(raw.id, 100, true) || !EVIDENCE_ID_RE.test(raw.id) || seen.has(raw.id)) fail('invalid_input', 400);
+      if (!str(raw.kind, 40, true) || !EVIDENCE_KINDS.has(raw.kind)) fail('invalid_input', 400);
+      if (!str(raw.subject, 120, true)) fail('invalid_input', 400);
+      seen.add(raw.id);
+      return { id: raw.id, kind: raw.kind, subject: raw.subject.trim() };
+    });
   }
 
   async function reserve(bucket, cap) {
@@ -190,6 +209,20 @@ export function application({ db, BackendError, ai: aiOverride }) {
       .eq('fingerprint', fp).eq('version', Number(found[0].version));
   }
 
+  function aiMetadata() {
+    try {
+      const value = ai.metadata?.();
+      if (!value || typeof value.provider !== 'string') return null;
+      return {
+        provider: value.provider.slice(0, 60),
+        model: typeof value.model === 'string' ? value.model.slice(0, 120) : null,
+        selection: value.selection === 'fixed' ? 'fixed' : 'dynamic',
+      };
+    } catch {
+      return null;
+    }
+  }
+
   return async (ctx) => {
     const request = ctx.request;
     const pathname = new URL(request.url).pathname;
@@ -257,20 +290,26 @@ export function application({ db, BackendError, ai: aiOverride }) {
       const user = identity(request);
       const body = await input(request);
       if (!str(body?.subject, 200, true) || !str(body?.symptoms, 1200, true)) fail('invalid_input', 400);
-      if (body.scriptOutput !== undefined && body.scriptOutput !== null && !str(body.scriptOutput, 24_000)) fail('invalid_input', 400);
+      if (body?.scriptOutput !== undefined) fail('invalid_input', 400);
+      const evidence = validateEvidence(body?.evidence);
 
       const blocked = await checkQuota(request, user);
       if (blocked) {
         return Response.json({ report: null, aiStatus: blocked }, { headers: { 'cache-control': 'no-store' } });
       }
       try {
-        const report = await ai.diagnose({
+        const answer = await ai.diagnose({
           subject: body.subject.trim(),
           symptoms: body.symptoms.trim(),
-          scriptOutput: typeof body.scriptOutput === 'string' && body.scriptOutput.trim()
-            ? body.scriptOutput.trim() : null,
+          evidence,
         });
-        return Response.json({ report, aiStatus: 'ok' }, { headers: { 'cache-control': 'no-store' } });
+        const report = normalizeDiagnosisAnswer(answer, evidence);
+        const metadata = aiMetadata();
+        return Response.json({
+          report,
+          aiStatus: 'ok',
+          ...(metadata ? { aiMetadata: metadata } : {}),
+        }, { headers: { 'cache-control': 'no-store' } });
       } catch (error) {
         const mapped = publicError(error);
         const aiStatus = mapped.code === 'ai_timeout' ? 'timeout'
